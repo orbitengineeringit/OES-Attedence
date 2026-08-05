@@ -1,0 +1,45 @@
+name: Deploy Frontend to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main # Triggers when code is pushed to main branch
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+permissions:
+  contents: write # Required for JamesIves/github-pages-deploy-action to push to gh-pages branch
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Clean Install Frontend Dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build Frontend Application
+        run: npm run build
+        working-directory: frontend
+        env:
+          # Injected into the React application bundle at build-time.
+          # These values are secure for client-side usage as they rely on Supabase Row-Level Security (RLS) policies.
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://rnzcdzbktitrzzbihpol.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuemNkemJrdGl0cnp6YmlocG9sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MDc2NzcsImV4cCI6MjA5NTA4MzY3N30.LK0aH9zoOlMtXy54xok1tIM3uli3vhAbXA8Lz2615qc' }}
+
+      - name: Deploy built assets to GitHub Pages Branch
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: frontend/dist
+          branch: gh-pages
+          clean: true
