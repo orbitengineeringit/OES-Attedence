@@ -570,6 +570,9 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
     if (empUpdateMatch && method === 'PUT') {
       const empId = empUpdateMatch.id;
       cache.employeesList = null; // Invalidate
+      cache.employeeTemplates = null; // Invalidate
+      cache.attendance = null; // Invalidate
+      cache.logs = null; // Invalidate
       delete cache.employees[empId]; // Invalidate
 
       const { name, email, role, department, password } = body;
@@ -578,6 +581,15 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       
       const { error } = await supabase.from('employees').update(updates).eq('id', empId);
       if (error) throw new Error(error.message);
+
+      // If password changed, update Supabase Auth user credentials
+      if (password && updates.email) {
+        try {
+          await supabase.auth.updateUser({ password: password });
+        } catch (authErr) {
+          console.warn('[AUTH SYNC WARN]: Could not update Supabase auth password:', authErr.message);
+        }
+      }
       return { success: true, message: 'Employee profile updated successfully.' };
     }
 
@@ -605,6 +617,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       }
 
       cache.employeesList = null; // Invalidate
+      cache.employeeTemplates = null; // Invalidate
       delete cache.employees[empId]; // Invalidate
 
       const { error } = await supabase
@@ -644,7 +657,10 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       const empId = empDeleteMatch.id;
       cache.employeesList = null; // Invalidate
       cache.employeeTemplates = null; // Invalidate
+      cache.attendance = null; // Invalidate
+      cache.logs = null; // Invalidate
       delete cache.employees[empId]; // Invalidate
+      delete cache.attendanceHistory[empId]; // Invalidate
 
       try {
         await supabase.from('attendance_corrections').delete().eq('employee_id', empId);
@@ -665,7 +681,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       cache.employeesList = null; // Invalidate
       cache.employeeTemplates = null; // Invalidate
       delete cache.employees[empId]; // Invalidate
-      const { faceDescriptor } = body;
+      const { faceDescriptor, avatar } = body;
 
       // Quality Validation
       if (!faceDescriptor || !Array.isArray(faceDescriptor) || faceDescriptor.length === 0) {
@@ -686,7 +702,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         .neq('id', empId);
       if (fetchError) throw new Error(fetchError.message);
 
-      const DUPLICATE_THRESHOLD = 0.55;
+      const DUPLICATE_THRESHOLD = 0.52;
       for (const emp of (existingFaces || [])) {
         const dbDescriptor = await decryptDescriptor(emp.face_data);
         if (!dbDescriptor) continue;
@@ -697,11 +713,14 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       }
 
       const encrypted = await encryptDescriptor(faceDescriptor);
+      const updatePayload = { face_data: encrypted };
+      if (avatar && typeof avatar === 'string' && avatar.trim().length > 0) {
+        updatePayload.avatar = avatar;
+      }
+
       const { error: updateError } = await supabase
         .from('employees')
-        .update({
-          face_data: encrypted
-        })
+        .update(updatePayload)
         .eq('id', empId);
       if (updateError) throw new Error(updateError.message);
 
@@ -716,8 +735,21 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       cache.employeeTemplates = null; // Invalidate
       delete cache.employees[empId]; // Invalidate
 
+      try {
+        await supabase.from('face_descriptors').delete().eq('employee_id', empId);
+      } catch (e) {}
+
       const { error } = await supabase.from('employees').update({ face_data: null }).eq('id', empId);
       if (error) throw new Error(error.message);
+
+      try {
+        await supabase.from('audit_logs').insert({
+          employee_id: empId,
+          event_type: 'BIOMETRICS_RESET',
+          details: 'Facial biometric template wiped by administrator'
+        });
+      } catch (e) {}
+
       return { success: true, message: 'Biometric face descriptor removed successfully.' };
     }
 
@@ -872,13 +904,74 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       return { success: true, logs };
     }
 
+    // 12b. PUT /attendance/:id (Manual Attendance Correction)
+    const attCorrectMatch = matchRoute(endpoint, '/attendance/:id');
+    if (attCorrectMatch && method === 'PUT') {
+      if (isEmployee) throw new Error('Access denied. Administrator privileges required.');
+      const attId = attCorrectMatch.id;
+      const { check_in, check_out, status, reason } = body || {};
+      
+      const { data: oldRecord, error: fetchErr } = await supabase
+        .from('attendance')
+        .select('*')
+        .eq('id', attId)
+        .single();
+      if (fetchErr || !oldRecord) throw new Error('Attendance record not found.');
+
+      let working_hours = oldRecord.working_hours || 0;
+      let overtime = 0;
+      const cIn = check_in || oldRecord.check_in;
+      const cOut = check_out || oldRecord.check_out;
+      if (cIn && cOut) {
+        const [h1, m1] = cIn.split(':').map(Number);
+        const [h2, m2] = cOut.split(':').map(Number);
+        const diffHrs = ((h2 * 60 + m2) - (h1 * 60 + m1)) / 60;
+        working_hours = Math.max(0, Math.round(diffHrs * 100) / 100);
+        overtime = working_hours > 8 ? Math.round((working_hours - 8) * 100) / 100 : 0;
+      }
+
+      const newValues = {
+        check_in: cIn,
+        check_out: cOut,
+        working_hours,
+        overtime,
+        status: status || oldRecord.status
+      };
+
+      const { error: updErr } = await supabase
+        .from('attendance')
+        .update(newValues)
+        .eq('id', attId);
+      if (updErr) throw new Error(updErr.message);
+
+      try {
+        await supabase.from('attendance_corrections').insert({
+          attendance_id: attId,
+          employee_id: oldRecord.employee_id,
+          corrected_by: currentUser?.id || 'admin',
+          reason: reason || 'Manual Admin Correction',
+          old_values: oldRecord,
+          new_values: newValues
+        });
+      } catch (e) {}
+
+      cache.attendance = null;
+      cache.attendanceHistory = {};
+      return { success: true, message: 'Attendance record corrected successfully.' };
+    }
+
     // 13. POST /attendance/clear (Wipe attendance ledger)
     if (endpoint === '/attendance/clear' && method === 'POST') {
       cache.attendance = null; // Invalidate
+      cache.attendanceHistory = {}; // Invalidate
       cache.employeesList = null; // Invalidate
       cache.employees = {}; // Invalidate
       cache.logs = null; // Invalidate
       
+      try {
+        await supabase.from('attendance_corrections').delete().neq('id', 0);
+      } catch (e) {}
+
       const { error: attErr } = await supabase.from('attendance').delete().neq('id', 0);
       if (attErr) throw new Error(attErr.message);
 
@@ -1076,6 +1169,9 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       cache.myLogs = {}; // Invalidate
       const { error } = await supabase.from('logs').delete().neq('id', 0);
       if (error) throw new Error(error.message);
+      try {
+        await supabase.from('audit_logs').delete().neq('id', 0);
+      } catch (e) {}
       return { success: true, message: 'All event logs have been cleared successfully.' };
     }
 
@@ -1232,6 +1328,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           latitude,
           longitude,
           isInside,
+          status: isInside ? 'Inside Office' : 'Outside Office',
           distance,
           radius,
           polygonBased,
@@ -1701,7 +1798,10 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           date: today,
           check_in: timeString,
           working_hours: 0,
-          status
+          status,
+          latitude: userLat,
+          longitude: userLng,
+          confidence_score: confidence || null
         });
         if (insertErr) throw new Error(insertErr.message);
 
@@ -1760,18 +1860,32 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         // Mark Check-Out
         eventType = 'CHECK_OUT';
 
-        const parseTime = (t) => {
+        const parseTime = (t, dateStr) => {
           if (!t) return new Date();
           const [h, m] = t.split(':').map(Number);
-          const d = new Date();
-          d.setHours(h, m, 0, 0);
-          return d;
+          if (dateStr) {
+            const [y, mon, d] = dateStr.split('-').map(Number);
+            return new Date(y, mon - 1, d, h, m, 0, 0);
+          }
+          const dt = new Date();
+          dt.setHours(h, m, 0, 0);
+          return dt;
         };
 
-        const checkInDate = parseTime(attRecord.check_in);
+        const checkInDate = parseTime(attRecord.check_in, attRecord.date);
         const checkOutDate = new Date();
-        const diffMs = checkOutDate - checkInDate;
+        const diffMs = Math.max(0, checkOutDate.getTime() - checkInDate.getTime());
         workingHours = Math.round((diffMs / (1000 * 60 * 60)) * 100) / 100;
+        const overtime = workingHours > 8 ? Math.round((workingHours - 8) * 100) / 100 : 0;
+
+        let finalStatus = attRecord.status;
+        if (workingHours < 4.5) {
+          finalStatus = 'Half Day';
+        } else if (workingHours < 8 && attRecord.status === 'On Time') {
+          finalStatus = 'Early Departure';
+        } else if (overtime > 0) {
+          finalStatus = 'Overtime';
+        }
 
         const checkOutTimeString = checkOutDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
@@ -1779,7 +1893,9 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           .from('attendance')
           .update({
             check_out: checkOutTimeString,
-            working_hours: workingHours
+            working_hours: workingHours,
+            overtime,
+            status: finalStatus
           })
           .eq('id', attRecord.id);
         if (updateErr) throw new Error(updateErr.message);
@@ -1929,28 +2045,56 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         throw new Error('Biometric Scanner Blocked: Anti-Spoof Check Flagged.');
       }
 
-      // Geofence check
+      // Geofence check — evaluate polygon boundary with circular fallback
       const userLat = parseFloat(userCoords?.latitude);
       const userLng = parseFloat(userCoords?.longitude);
 
       let isInside = true;
       if (userCoords && !isNaN(userLat) && !isNaN(userLng)) {
-        const { data: settingsData } = await supabase
-          .from('settings')
-          .select('key, value')
-          .in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius']);
-        
-        const settingsObj = {};
-        (settingsData || []).forEach(row => {
-          settingsObj[row.key] = parseFloat(row.value);
-        });
+        let polygonBased = false;
+        let distance = 0;
+        let radius = 100;
+        let officeLat = 28.6139;
+        let officeLng = 77.2090;
 
-        const officeLat = settingsObj.geofence_lat || 28.6139;
-        const officeLng = settingsObj.geofence_lng || 77.2090;
-        const radius = settingsObj.geofence_radius || 100;
+        try {
+          const { data: polyData } = await supabase
+            .from('office_geofence')
+            .select('polygon_coordinates')
+            .order('created_at', { ascending: false })
+            .limit(1);
 
-        const distance = calculateDistance(userLat, userLng, officeLat, officeLng);
-        isInside = distance <= (radius + 50);
+          if (polyData && polyData.length > 0 && polyData[0].polygon_coordinates) {
+            let coords = polyData[0].polygon_coordinates;
+            if (typeof coords === 'string') {
+              try { coords = JSON.parse(coords); } catch (e) {}
+            }
+            if (Array.isArray(coords) && coords.length >= 3) {
+              polygonBased = true;
+              isInside = isPointInPolygon(userLat, userLng, coords);
+              distance = getDistanceToPolygon(userLat, userLng, coords);
+            }
+          }
+        } catch (e) {}
+
+        if (!polygonBased) {
+          const { data: settingsData } = await supabase
+            .from('settings')
+            .select('key, value')
+            .in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius']);
+          
+          const settingsObj = {};
+          (settingsData || []).forEach(row => {
+            settingsObj[row.key] = parseFloat(row.value);
+          });
+
+          officeLat = settingsObj.geofence_lat || 28.6139;
+          officeLng = settingsObj.geofence_lng || 77.2090;
+          radius = settingsObj.geofence_radius || 100;
+
+          distance = calculateDistance(userLat, userLng, officeLat, officeLng);
+          isInside = distance <= (radius + 50);
+        }
 
         const BYPASS_GEOFENCE = typeof window !== 'undefined' && window.__BYPASS_GEOFENCE__ !== undefined ? window.__BYPASS_GEOFENCE__ : false;
         if (BYPASS_GEOFENCE) isInside = true;
@@ -1960,7 +2104,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
             employee_id: employeeId,
             event_type: 'GEOFENCE_VIOLATION',
             location: location || 'Public Terminal',
-            details: `Public Kiosk Geofence breach: employee outside by ${Math.round(distance - radius)}m.`
+            details: `Public Kiosk Geofence breach: employee outside boundary by ${Math.round(distance - radius)}m.`
           });
           throw new Error('Access Denied: You are outside office premises geofence.');
         }
@@ -1990,13 +2134,17 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         const isLate = checkInHour > 10 || (checkInHour === 10 && checkInMinute > 0);
         const status = isLate ? 'Late Arrival' : 'On Time';
         const lateMinutes = isLate ? (checkInHour - 10) * 60 + checkInMinute : 0;
+        const scanConfidence = minDistance !== Infinity ? Math.max(0, 1 - minDistance) : null;
 
         const { error: insertErr } = await supabase.from('attendance').insert({
           employee_id: employeeId,
           date: today,
           check_in: timeString,
           working_hours: 0,
-          status
+          status,
+          latitude: userLat || null,
+          longitude: userLng || null,
+          confidence_score: scanConfidence
         });
         if (insertErr) throw new Error(insertErr.message);
 
@@ -2038,23 +2186,39 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       } else if (!attRecord.check_out) {
         // Mark Check-Out
         eventType = 'CHECK_OUT';
-        const parseTime = (t) => {
+        const parseTime = (t, dateStr) => {
           if (!t) return new Date();
           const [h, m] = t.split(':').map(Number);
+          if (dateStr) {
+            const [y, mon, d] = dateStr.split('-').map(Number);
+            return new Date(y, mon - 1, d, h, m, 0, 0);
+          }
           const d = new Date();
           d.setHours(h, m, 0, 0);
           return d;
         };
 
-        const checkInDate = parseTime(attRecord.check_in);
-        const diffMs = now - checkInDate;
+        const checkInDate = parseTime(attRecord.check_in, attRecord.date);
+        const diffMs = Math.max(0, now.getTime() - checkInDate.getTime());
         const workingHours = Math.round((diffMs / (1000 * 60 * 60)) * 100) / 100;
+        const overtime = workingHours > 8 ? Math.round((workingHours - 8) * 100) / 100 : 0;
+
+        let finalStatus = attRecord.status;
+        if (workingHours < 4.5) {
+          finalStatus = 'Half Day';
+        } else if (workingHours < 8 && attRecord.status === 'On Time') {
+          finalStatus = 'Early Departure';
+        } else if (overtime > 0) {
+          finalStatus = 'Overtime';
+        }
 
         const { error: updateErr } = await supabase
           .from('attendance')
           .update({
             check_out: timeString,
-            working_hours: workingHours
+            working_hours: workingHours,
+            overtime,
+            status: finalStatus
           })
           .eq('id', attRecord.id);
         if (updateErr) throw new Error(updateErr.message);

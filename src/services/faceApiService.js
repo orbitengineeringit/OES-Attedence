@@ -116,6 +116,9 @@ export const detectFaceBiometrics = async (videoElement) => {
   return detection;
 };
 
+let qualityCanvas = null;
+let qualityCtx = null;
+
 /**
  * Analyzes video frame brightness and contrast for live quality feedback.
  * Returns { passed: boolean, warning: string|null }
@@ -125,14 +128,18 @@ export const checkFrameQuality = (videoElement) => {
     return { passed: true, warning: null };
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 80;
-  canvas.height = 60;
-  const ctx = canvas.getContext('2d');
+  if (!qualityCanvas && typeof document !== 'undefined') {
+    qualityCanvas = document.createElement('canvas');
+    qualityCanvas.width = 80;
+    qualityCanvas.height = 60;
+    qualityCtx = qualityCanvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  if (!qualityCtx) return { passed: true, warning: null };
   
   try {
-    ctx.drawImage(videoElement, 0, 0, 80, 60);
-    const imgData = ctx.getImageData(0, 0, 80, 60);
+    qualityCtx.drawImage(videoElement, 0, 0, 80, 60);
+    const imgData = qualityCtx.getImageData(0, 0, 80, 60);
     const pixels = imgData.data;
     const numPixels = 80 * 60;
 
@@ -194,7 +201,9 @@ export const estimateHeadPose = (landmarks) => {
   const leftDist = noseBridge.x - leftEyeOuter.x;
   const rightDist = rightEyeOuter.x - noseBridge.x;
 
-  if (leftDist <= 0 || rightDist <= 0) return 'front';
+  // If nose has crossed outer eye boundary, face is turned completely to that side
+  if (leftDist <= 0) return 'left';
+  if (rightDist <= 0) return 'right';
 
   const ratio = leftDist / rightDist;
 
@@ -209,11 +218,11 @@ export const estimateHeadPose = (landmarks) => {
 };
 
 /**
- * Averages a list of descriptors into a single robust template vector.
+ * Averages a list of descriptors into a single robust template vector with L2 unit normalization.
  * @param {Array<Float32Array>} descriptors 
  * @returns {Array<number>}
  */
-export const calculateAverageDescriptor = (descriptors) => {
+export const calculateAverageDescriptor = (descriptors, normalize = false) => {
   if (!descriptors || descriptors.length === 0) return null;
   const vectorLength = descriptors[0].length;
   const avg = new Array(vectorLength).fill(0);
@@ -224,7 +233,11 @@ export const calculateAverageDescriptor = (descriptors) => {
     }
   }
 
-  return avg.map(val => val / descriptors.length);
+  const mean = avg.map(val => val / descriptors.length);
+  if (!normalize) return mean;
+  const norm = Math.sqrt(mean.reduce((sum, val) => sum + val * val, 0));
+  if (norm === 0) return mean;
+  return mean.map(val => val / norm);
 };
 
 /**
@@ -248,7 +261,7 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   const { box, score } = detection.detection;
   const positions = detection.landmarks.positions;
 
-  // 1. Detection confidence — lowered threshold for better usability
+  // 1. Detection confidence
   if (score < 0.35) {
     return {
       isFullFace: false,
@@ -257,24 +270,24 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
     };
   }
 
-  // 2. Boundary check — only reject if face is severely cut off (generous margins)
-  const marginX = videoWidth * 0.01;
-  const marginY = videoHeight * 0.01;
+  // 2. Boundary check — reject if face is cut off at the edge
+  const marginX = videoWidth * 0.04;
+  const marginY = videoHeight * 0.04;
   if (
-    box.x < -marginX ||
-    box.y < -marginY ||
-    box.x + box.width > videoWidth + marginX ||
-    box.y + box.height > videoHeight + marginY
+    box.x < marginX ||
+    box.y < marginY ||
+    box.x + box.width > videoWidth - marginX ||
+    box.y + box.height > videoHeight - marginY
   ) {
     return {
       isFullFace: false,
-      reason: 'Face is cut off. Move slightly back so your full face is visible.',
+      reason: 'Face is cut off at the edge. Move so your full face is visible.',
       telemetry: { box }
     };
   }
 
   // 3. Face size check — must not be too far away
-  const minWidth = videoWidth * 0.12;
+  const minWidth = videoWidth * 0.20;
   const maxWidth = videoWidth * 0.95;
   if (box.width < minWidth) {
     return {
@@ -306,9 +319,8 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   const noseBridge = positions[27];
   const noseTip = positions[30];
   const mouthLeft = positions[48];
-  const chin = positions[8];
 
-  // 5. Yaw / Head turn check — relaxed to allow natural head positions
+  // 5. Yaw / Head turn check
   const leftDist = Math.abs(noseBridge.x - leftEyeOuter.x);
   const rightDist = Math.abs(rightEyeOuter.x - noseBridge.x);
 
@@ -321,17 +333,17 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   }
 
   const yawRatio = leftDist / rightDist;
-  if (yawRatio < 0.45) {
+  if (yawRatio < 0.68) {
     return {
       isFullFace: false,
-      reason: 'Face turned too far left. Look towards the camera.',
+      reason: 'Face turned left. Look towards the camera.',
       telemetry: { yawRatio }
     };
   }
-  if (yawRatio > 2.2) {
+  if (yawRatio > 1.45) {
     return {
       isFullFace: false,
-      reason: 'Face turned too far right. Look towards the camera.',
+      reason: 'Face turned right. Look towards the camera.',
       telemetry: { yawRatio }
     };
   }
@@ -347,14 +359,14 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
     };
   }
 
-  // 7. Head tilt / Roll angle — relaxed tolerance
+  // 7. Head tilt / Roll angle
   const dy = rightEyeOuter.y - leftEyeOuter.y;
   const dx = rightEyeOuter.x - leftEyeOuter.x;
   const tiltDegrees = Math.abs((Math.atan2(dy, dx) * 180) / Math.PI);
-  if (tiltDegrees > 28) {
+  if (tiltDegrees > 16) {
     return {
       isFullFace: false,
-      reason: 'Head is tilted too much. Keep your head upright.',
+      reason: 'Head is tilted. Keep your head upright.',
       telemetry: { tiltDegrees }
     };
   }
@@ -373,14 +385,37 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
     };
   }
 
+  // 9. Eye Open / Eye Aspect Ratio (EAR) validation
+  const getPointEAR = (pts) => {
+    if (!pts || pts.length < 6) return 0.3;
+    const v1 = Math.hypot(pts[1].x - pts[5].x, pts[1].y - pts[5].y);
+    const v2 = Math.hypot(pts[2].x - pts[4].x, pts[2].y - pts[4].y);
+    const h = Math.hypot(pts[0].x - pts[3].x, pts[0].y - pts[3].y);
+    if (h <= 0.0001 || isNaN(h)) return 0.3;
+    return (v1 + v2) / (2.0 * h);
+  };
+
+  const leftEyePts = detection.landmarks.getLeftEye ? detection.landmarks.getLeftEye() : positions.slice(36, 42);
+  const rightEyePts = detection.landmarks.getRightEye ? detection.landmarks.getRightEye() : positions.slice(42, 48);
+  const avgEAR = (getPointEAR(leftEyePts) + getPointEAR(rightEyePts)) / 2.0;
+
+  if (avgEAR < 0.16) {
+    return {
+      isFullFace: false,
+      reason: 'Eyes closed. Please keep both eyes open.',
+      telemetry: { avgEAR, score }
+    };
+  }
+
   // Passed all checks!
   return {
     isFullFace: true,
-    reason: 'Full face verified.',
+    reason: 'Full frontal face verified.',
     telemetry: {
       yawRatio,
       tiltDegrees,
       eyeSpanRatio,
+      avgEAR,
       score
     }
   };

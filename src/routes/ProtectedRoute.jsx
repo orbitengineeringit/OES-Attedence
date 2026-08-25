@@ -26,15 +26,10 @@ export default function ProtectedRoute({ children, allowedRoles = [] }) {
     return <Navigate to="/login" replace />;
   }
 
-  // Face enrollment enforcement for standard employees
-  if (user?.role === 'employee') {
+  // Prevent employees from visiting /enroll-face if their biometrics are already registered
+  if (user?.role === 'employee' && location.pathname === '/enroll-face') {
     const faceRegistered = user.is_face_registered || user.face_registered;
-    if (!faceRegistered) {
-      if (location.pathname !== '/enroll-face') {
-        console.log('[ROUTE GUARD]: Biometrics missing. Redirecting to /enroll-face.');
-        return <Navigate to="/enroll-face" replace />;
-      }
-    } else if (location.pathname === '/enroll-face') {
+    if (faceRegistered) {
       console.log('[ROUTE GUARD]: Biometrics already registered. Redirecting to dashboard.');
       return <Navigate to="/employee-dashboard" replace />;
     }

@@ -3,10 +3,11 @@ import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function AuthLayout() {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, user, loading } = useAuth();
 
   if (isAuthenticated) {
-    return <Navigate to="/dashboard" replace />;
+    const target = user?.role === 'admin' ? '/dashboard' : '/employee-dashboard';
+    return <Navigate to={target} replace />;
   }
 
   if (loading) {

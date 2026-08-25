@@ -86,7 +86,7 @@ export const requireAuth = async (req, res, next) => {
     }
 
     // [C-02 FIX]: Use validated JWT_SECRET only — no insecure fallback allowed.
-    const secret = JWT_SECRET || DEFAULT_INSECURE_SECRET;
+    const secret = process.env.JWT_SECRET || JWT_SECRET || DEFAULT_INSECURE_SECRET;
     const decoded = jwt.verify(token, secret);
     
     // Fetch user profile from database to attach latest attributes

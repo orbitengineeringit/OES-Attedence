@@ -269,35 +269,42 @@ export default function Dashboard() {
               console.warn('[DASHBOARD] Attendance records fetch for stats:', e);
             }
 
-            const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+            const todayUTC = new Date().toISOString().split('T')[0];
+            const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
             // Active Now count:
-            // Employees marked 'Inside Office' OR having a check_in today without check_out
+            // Employees marked 'Online' / 'Inside Office' OR having a check_in today without check_out
             const checkedInTodayIds = new Set(
               attendanceRecords
-                .filter(a => a.date === todayStr && a.check_in && !a.check_out)
+                .filter(a => (a.date === todayUTC || a.date === todayIST) && a.check_in && !a.check_out)
                 .map(a => a.employee_id)
             );
             const activeCount = employeesList.filter(e => 
-              e.status === 'Inside Office' || checkedInTodayIds.has(e.id)
+              e.status === 'Online' || e.status === 'Inside Office' || checkedInTodayIds.has(e.id)
             ).length;
 
             // Average Working Hours:
-            // Calculate average working hours from completed records
-            const completedRecords = attendanceRecords.filter(a => typeof a.working_hours === 'number' && a.working_hours > 0);
+            // Calculate average working hours from completed records with safe float parsing
+            const completedRecords = attendanceRecords.filter(a => {
+              const hrs = parseFloat(a.working_hours);
+              return !isNaN(hrs) && hrs > 0;
+            });
             let avgHours = '0.0';
             if (completedRecords.length > 0) {
-              const total = completedRecords.reduce((sum, r) => sum + r.working_hours, 0);
+              const total = completedRecords.reduce((sum, r) => sum + parseFloat(r.working_hours), 0);
               avgHours = (total / completedRecords.length).toFixed(1);
             }
 
-            const alerts = fetchedLogs.filter(l => 
-              l.event_type === 'SECURITY_ALERT' || 
-              l.event_type === 'UNAUTHORIZED_SCAN' ||
-              l.event_type === 'SPOOF_ATTEMPT' ||
-              l.event_type === 'VELOCITY_BREACH' ||
-              l.event_type === 'REPLAY_ATTEMPT'
-            ).length;
+            const alertEventTypes = new Set([
+              'SECURITY_ALERT',
+              'UNAUTHORIZED_SCAN',
+              'SPOOF_ATTEMPT',
+              'VELOCITY_BREACH',
+              'REPLAY_ATTEMPT',
+              'GEOFENCE_VIOLATION',
+              'GPS_ERROR'
+            ]);
+            const alerts = fetchedLogs.filter(l => alertEventTypes.has(l.event_type)).length;
 
             setMetrics({ 
               activeEmployees: activeCount, 

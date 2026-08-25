@@ -1,4 +1,6 @@
 process.env.DB_FILE = './api_test_database.sqlite';
+process.env.JWT_SECRET = 'super-secure-long-test-jwt-secret-key-32chars!';
+process.env.ALLOW_MOCK_AUTH = 'true';
 
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
@@ -22,7 +24,7 @@ describe('HTTP API Endpoints Integration Tests', () => {
   function generateTestDescriptor(seed = 0.1) {
     const descriptor = new Float32Array(128);
     for (let i = 0; i < 128; i++) {
-      descriptor[i] = seed + (i / 1000.0);
+      descriptor[i] = Math.sin((i + 1) * seed * 123.456);
     }
     return Array.from(descriptor);
   }

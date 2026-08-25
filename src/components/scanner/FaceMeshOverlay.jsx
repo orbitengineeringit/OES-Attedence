@@ -128,9 +128,13 @@ export const drawScanningCrosshairs = (ctx, width, height) => {
   ctx.stroke();
 
   if (Math.floor(Date.now() / 600) % 2 === 0) {
+    ctx.save();
+    ctx.translate(width / 2, height / 2 + 76);
+    ctx.scale(-1, 1);
     ctx.fillStyle = '#4F46E5';
     ctx.font = '11px Inter, system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Align face inside frame', width / 2, height / 2 + 76);
+    ctx.fillText('Align face inside frame', 0, 0);
+    ctx.restore();
   }
 };

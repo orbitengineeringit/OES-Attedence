@@ -5,6 +5,7 @@ import { loadFaceApiModels, detectFaceBiometrics, validateFullFaceEnrollment, fa
 import { playBiometricSound } from '../services/soundService.js';
 import { calculateAverageEAR, processBlinkState } from '../components/scanner/BlinkDetector.js';
 import { submitPublicAttendanceScan } from '../components/scanner/AttendanceProcessor.js';
+import { speakGreeting } from '../components/scanner/VoiceAssistant.js';
 import { apiCall } from '../services/api.js';
 import CameraFeed from '../components/scanner/CameraFeed.jsx';
 import FaceMeshOverlay, { drawCustomDetections, drawCustomMesh, drawScanningCrosshairs } from '../components/scanner/FaceMeshOverlay.jsx';
@@ -112,8 +113,8 @@ export default function PublicAttendanceScanner() {
         // Evaluate distance to office settings
         apiCall('/settings', 'GET').then(res => {
           if (res?.success && res?.settings) {
-            const officeLat = parseFloat(res.settings.geofence_lat) || 23.2168;
-            const officeLng = parseFloat(res.settings.geofence_lng) || 77.4250;
+            const officeLat = parseFloat(res.settings.geofence_lat) || 28.6139;
+            const officeLng = parseFloat(res.settings.geofence_lng) || 77.2090;
             const radius = parseInt(res.settings.geofence_radius, 10) || 100;
 
             const dist = calculateHaversineDistance(coords.latitude, coords.longitude, officeLat, officeLng);
@@ -326,20 +327,29 @@ export default function PublicAttendanceScanner() {
               const blinkState = processBlinkState(ear, blinkClosedRef.current);
               blinkClosedRef.current = blinkState.isClosed;
 
-              if (blinkState.isBlinkDetected || ear < 0.28) {
+              if (blinkState.isBlinkDetected || ear < 0.22) {
                 blinkDetectedRef.current = true;
                 setBlinkDetected(true);
               }
             }
 
-            // Auto-pass challenge — no head turn or blink required
-            if (!challengePassedRef.current) {
+            // Verify Active Liveness Challenge
+            let passedChallenge = false;
+            if (livenessChallenge === 'blink') {
+              passedChallenge = blinkDetectedRef.current;
+            } else if (livenessChallenge === 'turn_left') {
+              passedChallenge = headTurnRatio < 0.42;
+            } else if (livenessChallenge === 'turn_right') {
+              passedChallenge = headTurnRatio > 0.58;
+            }
+
+            if (passedChallenge && !challengePassedRef.current) {
               challengePassedRef.current = true;
               setChallengePassed(true);
             }
 
-            const verified = true;
-            setLivenessVerified(true);
+            const verified = challengePassedRef.current;
+            setLivenessVerified(verified);
 
             const resized = faceapi.resizeResults(rawDetection, displaySize);
             drawCustomDetections(ctx, resized, verified);
@@ -399,6 +409,7 @@ export default function PublicAttendanceScanner() {
       );
 
       playBiometricSound('success');
+      speakGreeting(`Welcome ${response.employee?.name || 'Employee'}. Attendance recorded.`);
       setScanResult({
         success: true,
         name: response.employee?.name || 'Employee',
@@ -437,6 +448,7 @@ export default function PublicAttendanceScanner() {
       };
 
       const mapped = reasonMessages[reason] || { title: 'Verification Failed', subtext: serverMessage || 'Please try again or contact HR.' };
+      speakGreeting(mapped.title + '. ' + mapped.subtext);
 
       setScanResult({
         success: false,

@@ -55,10 +55,9 @@ export const findMatchingDescriptor = (descriptor, enrolledFaces, threshold = 0.
     return { isMatch: false, distance: best.distance };
   }
 
-  // Ambiguity check: if the runner-up is within 0.08 of the best match,
-  // the distinction is too uncertain — reject to prevent misidentification.
+  // Ambiguity check: only applies if runner-up is also a plausible candidate (under threshold + MARGIN)
   const MARGIN = 0.08;
-  if (runnerUp && (runnerUp.distance - best.distance) < MARGIN) {
+  if (runnerUp && runnerUp.distance <= (threshold + MARGIN) && (runnerUp.distance - best.distance) < MARGIN) {
     console.warn(
       `[FACE MATCHER]: Ambiguous match rejected. Best: ${best.distance.toFixed(4)} (${best.face.name}), ` +
       `Runner-up: ${runnerUp.distance.toFixed(4)} (${runnerUp.face.name}), margin: ${(runnerUp.distance - best.distance).toFixed(4)} < ${MARGIN}`
@@ -67,5 +66,26 @@ export const findMatchingDescriptor = (descriptor, enrolledFaces, threshold = 0.
   }
 
   return { isMatch: true, match: best.face, distance: best.distance };
+};
+
+/**
+ * Checks if a candidate face descriptor already matches an existing enrolled employee.
+ * @param {Array<number>|Float32Array} candidateDescriptor
+ * @param {Array<{id: string, name: string, descriptor: Array<number>}>} enrolledFaces
+ * @param {number} duplicateThreshold Threshold for duplicate detection (default: 0.52)
+ * @returns {{ isDuplicate: boolean, duplicateOf?: {id: string, name: string}, distance?: number }}
+ */
+export const checkDuplicateFace = (candidateDescriptor, enrolledFaces, duplicateThreshold = 0.52) => {
+  if (!candidateDescriptor || !enrolledFaces || enrolledFaces.length === 0) {
+    return { isDuplicate: false };
+  }
+
+  for (const emp of enrolledFaces) {
+    const dist = calculateEuclideanDistance(candidateDescriptor, emp.descriptor);
+    if (dist <= duplicateThreshold) {
+      return { isDuplicate: true, duplicateOf: emp, distance: dist };
+    }
+  }
+  return { isDuplicate: false };
 };
 

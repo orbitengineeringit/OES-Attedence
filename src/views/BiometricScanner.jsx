@@ -190,15 +190,8 @@ export default function BiometricScanner() {
         activeStreamRef.current = null;
       }
       
-      // Explicitly detach Leaflet map instance on unmount
       if (scannerMapRef.current) {
-        try {
-          console.log('[BiometricScanner Cleanup]: Detaching scanner map...');
-          scannerMapRef.current.remove();
-          scannerMapRef.current = null;
-        } catch (e) {
-          console.warn('[BiometricScanner Map Cleanup Warning]:', e);
-        }
+        scannerMapRef.current = null;
       }
     };
   }, []);
@@ -419,6 +412,9 @@ export default function BiometricScanner() {
           lastScanDetailsRef.current = null;
           setLastScanDetails(null);
           setScanResult(null);
+          if (mountedRef.current && !scanLoopActive.current) {
+            startCamera();
+          }
           return 0;
         }
         return prev - 1;
@@ -502,7 +498,7 @@ export default function BiometricScanner() {
         challengeSessionIdRef.current
       );
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Biometric matching request timed out.')), 3000)
+        setTimeout(() => reject(new Error('Biometric matching request timed out. Please retry.')), 12000)
       );
 
       const response = await Promise.race([scanPromise, timeoutPromise]);
@@ -679,22 +675,33 @@ export default function BiometricScanner() {
             const blinkState = processBlinkState(ear, blinkClosedRef.current);
             blinkClosedRef.current = blinkState.isClosed;
 
-            if (blinkState.isBlinkDetected || ear < 0.28) {
+            if (blinkState.isBlinkDetected || ear < 0.22) {
               blinkDetectedRef.current = true;
               setBlinkDetected(true);
             }
           }
 
-          // Auto-pass challenge — no head turn or blink required
-          if (!challengePassedRef.current) {
+          // Verify Active Liveness Challenge
+          let passedCurrentChallenge = false;
+          if (livenessChallenge === 'blink') {
+            passedCurrentChallenge = blinkDetectedRef.current;
+          } else if (livenessChallenge === 'turn_left') {
+            passedCurrentChallenge = headTurnRatio < 0.42 || estimateHeadPose(detection.landmarks) === 'left';
+          } else if (livenessChallenge === 'turn_right') {
+            passedCurrentChallenge = headTurnRatio > 0.58 || estimateHeadPose(detection.landmarks) === 'right';
+          }
+
+          if (passedCurrentChallenge && !challengePassedRef.current) {
             challengePassedRef.current = true;
             setChallengePassed(true);
           }
 
-          const verified = true;
-          
-          // Always progress stability lock — no challenge gate
-          consecutiveFrontFrames.current += 1;
+          // Progress stability lock once challenge has been satisfied
+          if (challengePassedRef.current) {
+            consecutiveFrontFrames.current += 1;
+          } else {
+            consecutiveFrontFrames.current = 0;
+          }
 
           const progress = Math.min(100, Math.round((consecutiveFrontFrames.current / 5) * 100));
           setTelemetryLockProgress(progress);
@@ -703,11 +710,10 @@ export default function BiometricScanner() {
           drawCustomDetections(ctx, detection, isLocked);
           drawCustomMesh(ctx, detection.landmarks, isLocked);
 
-          // Force pose telemetry to 'front' immediately to reflect a premium locked state on the HUD
-          setTelemetryPose(verified ? 'front' : 'scanning');
+          setTelemetryPose(challengePassedRef.current ? 'front' : 'scanning');
 
-          // Auto-trigger scan if face remains stable for 5 frames (~150ms)
-          if (consecutiveFrontFrames.current >= 5 && !cooldownActive.current && !scanInProgress.current) {
+          // Auto-trigger scan if face remains stable for 5 frames (~150ms) post-challenge
+          if (challengePassedRef.current && consecutiveFrontFrames.current >= 5 && !cooldownActive.current && !scanInProgress.current) {
             console.log('[DEBUG LOG - ATTENDANCE TRIGGER] Face stability threshold reached (5 frames). Executing auto-scan...');
             setScannerStatusMsg('Scanning Face...');
             handleAutoScan(detection.descriptor);
@@ -764,11 +770,10 @@ export default function BiometricScanner() {
   // 8. Start and Stop Camera Stream Functions
   const startCamera = async () => {
     if (modelsStatus !== 'ready' || isStartingScanner || cameraActive) return;
+    setIsStartingScanner(true);
     
     try {
       await fetchChallenge();
-
-      setIsStartingScanner(true);
       setScannerStatusMsg('Starting Scanner...');
       setScanResult(null);
       const mediaStream = await navigator.mediaDevices.getUserMedia({

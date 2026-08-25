@@ -12,9 +12,13 @@ import { apiCall } from '../../services/api.js';
  * @returns {Promise<any>} Response object from the server
  */
 export const submitAttendanceScan = async (descriptorArray, userCoords, actionType, blinkDetected = false, challengeType = 'blink', challengePassed = false, headTurnRatio = 0.5, landmarks = [], challengeSessionId = null) => {
-  // [C-01 + H-06 FIX]: GPS is mandatory — never silently substitute office coordinates.
-  // Reject immediately if GPS is unavailable so geofence cannot be bypassed.
-  if (!userCoords || !userCoords.latitude || !userCoords.longitude) {
+  if (
+    !userCoords ||
+    typeof userCoords.latitude !== 'number' ||
+    typeof userCoords.longitude !== 'number' ||
+    isNaN(userCoords.latitude) ||
+    isNaN(userCoords.longitude)
+  ) {
     throw {
       message: 'GPS Available: Failed - Location access is disabled or unavailable. Please enable GPS and try again.',
       voiceMessage: 'GPS location access is required to verify your physical presence.',
@@ -66,8 +70,13 @@ export const submitAttendanceScan = async (descriptorArray, userCoords, actionTy
  * @returns {Promise<any>} Response object from the server
  */
 export const submitPublicAttendanceScan = async (descriptorArray, userCoords, blinkDetected = false, challengeType = 'blink', challengePassed = false, headTurnRatio = 0.5, landmarks = [], challengeSessionId = null) => {
-  // [C-01 + H-06 FIX]: GPS is mandatory — never silently substitute office coordinates.
-  if (!userCoords || !userCoords.latitude || !userCoords.longitude) {
+  if (
+    !userCoords ||
+    typeof userCoords.latitude !== 'number' ||
+    typeof userCoords.longitude !== 'number' ||
+    isNaN(userCoords.latitude) ||
+    isNaN(userCoords.longitude)
+  ) {
     throw {
       message: 'GPS Available: Failed - Location access is disabled or unavailable. Please enable GPS and try again.',
       voiceMessage: 'GPS location access is required to verify your physical presence.',
@@ -75,8 +84,7 @@ export const submitPublicAttendanceScan = async (descriptorArray, userCoords, bl
     };
   }
 
-  // [C-01 FIX]: spoofIndex intentionally omitted — server cannot trust client-supplied liveness scores.
-  // blinkDetected is a genuine value from the EAR-based blink detector, not a hardcoded true.
+  // spoofIndex intentionally omitted — server cannot trust client-supplied liveness scores.
   const response = await apiCall('/attendance/public-scan', 'POST', {
     faceDescriptor: Array.from(descriptorArray),
     faceMetrics: { 
@@ -85,9 +93,9 @@ export const submitPublicAttendanceScan = async (descriptorArray, userCoords, bl
       challengePassed, 
       headTurnRatio, 
       landmarks 
-    }, // spoofIndex intentionally omitted
-    clientTimestamp: new Date().toISOString(), // [H-04 FIX]: replay protection timestamp
-    challengeSessionId, // [Priority 2]: Server-side challenge session nonce temporal validation
+    },
+    clientTimestamp: new Date().toISOString(),
+    challengeSessionId,
     location: 'Public Attendance Link',
     userCoords: { 
       latitude: userCoords.latitude, 
@@ -115,10 +123,14 @@ export const submitPublicAttendanceScan = async (descriptorArray, userCoords, bl
  * @returns {string} Suitable announcement text for VoiceAssistant
  */
 export const mapErrorToVoiceMessage = (error) => {
-  const msg = error.message || '';
-  if (msg.includes('Spoof')) return 'Access denied. Spoofing attempt blocked.';
-  if (msg.includes('Unauthorized')) return 'Access denied. Unauthorized individual detected.';
-  if (msg.includes('completed') || msg.includes('satisfied')) return 'Attendance already completed for today.';
-  if (msg.includes('outside') || msg.includes('premises')) return 'Access denied. You are outside office premises.';
-  return 'Biometric mismatch. Access Denied.';
+  const msg = error.message || error.voiceMessage || '';
+  if (msg.includes('Spoof') || msg.includes('Anti-Spoof')) return 'Access denied. Spoofing attempt blocked.';
+  if (msg.includes('GPS') || msg.includes('Location') || msg.includes('location')) return 'GPS location access is required to verify your physical presence.';
+  if (msg.includes('Multiple') || msg.includes('multiple')) return 'Multiple faces detected. Only one person allowed in frame.';
+  if (msg.includes('outside') || msg.includes('premises') || msg.includes('geofence')) return 'Access denied. You are outside office premises.';
+  if (msg.includes('completed') || msg.includes('already checked')) return 'Attendance already recorded for today.';
+  if (msg.includes('timed out') || msg.includes('Timeout')) return 'Verification request timed out. Please try again.';
+  if (msg.includes('Ambiguous') || msg.includes('ambiguous')) return 'Ambiguous match detected. Please face the camera clearly.';
+  if (msg.includes('Not Recognized') || msg.includes('not recognized')) return 'Face not recognized. Please contact HR administrator.';
+  return 'Biometric verification failed. Access Denied.';
 };

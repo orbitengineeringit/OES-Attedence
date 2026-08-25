@@ -48,7 +48,7 @@ export default function Profile() {
 
     fetchProfileData();
     return () => { isMounted = false; };
-  }, [user]);
+  }, [user?.id]);
 
   const handleAvatarFileSelect = async (e) => {
     const file = e.target.files?.[0];

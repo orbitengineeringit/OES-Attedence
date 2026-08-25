@@ -79,6 +79,7 @@ export default function GeofenceSandbox() {
         setTelemetry({
           distance: response.data.distance,
           status: response.data.status,
+          isInside: response.data.isInside,
           transition: response.data.transition
         });
       }
@@ -144,7 +145,7 @@ export default function GeofenceSandbox() {
     syncCoordinates(outsideCoords[0], outsideCoords[1]);
   };
 
-  const inside = telemetry.status === 'Inside Office';
+  const inside = telemetry.status === 'Inside Office' || telemetry.isInside === true;
 
   return (
     <motion.div 

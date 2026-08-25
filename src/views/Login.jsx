@@ -25,11 +25,9 @@ export default function Login() {
     const result = await login(email, password);
 
     if (result.success) {
-      const cachedUser = JSON.parse(localStorage.getItem('quantum_user') || '{}');
-      if (cachedUser.role === 'admin') {
+      const currentUser = result.user || JSON.parse(localStorage.getItem('quantum_user') || '{}');
+      if (currentUser.role === 'admin') {
         navigate('/dashboard');
-      } else if (cachedUser.is_face_registered === false) {
-        navigate('/enroll-face');
       } else {
         navigate('/employee-dashboard');
       }
@@ -134,14 +132,15 @@ export default function Login() {
             <form onSubmit={handleSubmit} className="mt-5 space-y-3.5 text-left">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Corporate email
+                  Corporate email or Employee ID
                 </label>
                 <input
-                  type="email"
+                  type="text"
+                  autoComplete="username"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@company.com"
+                  placeholder="name@company.com or OES/038"
                   className="w-full text-xs"
                 />
               </div>

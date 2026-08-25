@@ -1545,14 +1545,15 @@ export default function AdminPanel() {
   // Export report to CSV helper
   const handleExportCSV = () => {
     let csvContent = "data:text/csv;charset=utf-8,";
-    csvContent += "ID,Name,Email,Role,Department,Status\n";
+    csvContent += '"ID","Name","Email","Role","Department","Status"\n';
+    const esc = (val) => `"${String(val || '').replace(/"/g, '""')}"`;
     employees.forEach(e => {
-      csvContent += `${e.id},${e.name},${e.email},${e.role},${e.department},${e.status}\n`;
+      csvContent += `${esc(e.id)},${esc(e.name)},${esc(e.email)},${esc(e.role)},${esc(e.department)},${esc(e.status)}\n`;
     });
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "quantum_guard_employees.csv");
+    link.setAttribute("download", "oes_attendance_employees.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
