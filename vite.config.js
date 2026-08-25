@@ -17,7 +17,8 @@ export default defineConfig({
     }
   },
   esbuild: {
-    drop: ['debugger'],
+    // Note: Vite 8 uses oxc by default; esbuild options are ignored.
+    // debugger statements are dropped automatically in production mode.
   },
   build: {
     chunkSizeWarningLimit: 1500,
