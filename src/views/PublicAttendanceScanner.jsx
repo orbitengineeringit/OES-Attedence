@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { loadFaceApiModels, detectFaceBiometrics, validateFullFaceEnrollment, faceapi } from '../services/faceApiService.js';
+import { loadFaceApiModels, detectFaceBiometrics, validateFullFaceEnrollment, checkFrameQuality, faceapi } from '../services/faceApiService.js';
 import { playBiometricSound } from '../services/soundService.js';
 import { calculateAverageEAR, processBlinkState } from '../components/scanner/BlinkDetector.js';
 import { submitPublicAttendanceScan } from '../components/scanner/AttendanceProcessor.js';
@@ -234,11 +234,48 @@ export default function PublicAttendanceScanner() {
     setCameraActive(false);
   };
 
+  // Telemetry cache refs to prevent React 60 FPS re-render loops (fixes screen flickering)
+  const lastFaceDetectedRef = useRef(false);
+  const lastLivenessVerifiedRef = useRef(false);
+  const lastStatusMsgRef = useRef('');
+  const lastWarningRef = useRef(null);
+
+  const updateFaceDetected = (detected) => {
+    if (detected !== lastFaceDetectedRef.current) {
+      setFaceDetected(detected);
+      lastFaceDetectedRef.current = detected;
+    }
+  };
+  const updateLiveness = (verified) => {
+    if (verified !== lastLivenessVerifiedRef.current) {
+      setLivenessVerified(verified);
+      lastLivenessVerifiedRef.current = verified;
+    }
+  };
+  const updateStatus = (msg) => {
+    if (msg !== lastStatusMsgRef.current) {
+      setStatusMsg(msg);
+      lastStatusMsgRef.current = msg;
+    }
+  };
+  const updateFrameWarning = (warning) => {
+    if (warning !== lastWarningRef.current) {
+      setFrameQualityWarning(warning);
+      lastWarningRef.current = warning;
+    }
+  };
+
   // Main frame processing loop
   const processFrame = async () => {
     if (!isComponentMounted.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
+
+    // Pause heavy detection if scan result card or processing is actively showing
+    if (scanResult || isProcessing || scanInProgressRef.current) {
+      animationFrameIdRef.current = requestAnimationFrame(processFrame);
+      return;
+    }
 
     if (video && video.readyState >= 2 && canvas) {
       const ctx = canvas.getContext('2d');
@@ -251,12 +288,11 @@ export default function PublicAttendanceScanner() {
         ctx.clearRect(0, 0, displaySize.width, displaySize.height);
 
         try {
-          // 1. Run live frame quality check
-          const { checkFrameQuality } = await import('../services/faceApiService.js');
+          // 1. Run live frame quality check using static import
           const quality = checkFrameQuality(video);
           if (!quality.passed) {
-            setFrameQualityWarning(quality.warning);
-            setStatusMsg(quality.warning.toUpperCase());
+            updateFrameWarning(quality.warning);
+            updateStatus(quality.warning.toUpperCase());
             
             ctx.strokeStyle = '#F59E0B'; // Amber alert warning box
             ctx.lineWidth = 3;
@@ -269,14 +305,14 @@ export default function PublicAttendanceScanner() {
             animationFrameIdRef.current = requestAnimationFrame(processFrame);
             return;
           }
-          setFrameQualityWarning(null);
+          updateFrameWarning(null);
 
           // 2. Run face detection
           const rawDetection = await detectFaceBiometrics(video);
 
           // 3. Reject if multiple faces detected
           if (rawDetection && rawDetection.multipleFaces) {
-            setStatusMsg('MULTIPLE FACES DETECTED');
+            updateStatus('MULTIPLE FACES DETECTED');
             challengePassedRef.current = false;
             setChallengePassed(false);
             
@@ -293,7 +329,7 @@ export default function PublicAttendanceScanner() {
           }
 
           if (rawDetection) {
-            setFaceDetected(true);
+            updateFaceDetected(true);
             latestDetectionRef.current = rawDetection;
             latestDescriptorRef.current = rawDetection.descriptor;
 
@@ -333,7 +369,7 @@ export default function PublicAttendanceScanner() {
             }
 
             const verified = true;
-            setLivenessVerified(verified);
+            updateLiveness(verified);
 
             const resized = faceapi.resizeResults(rawDetection, displaySize);
             drawCustomDetections(ctx, resized, verified);
@@ -341,16 +377,16 @@ export default function PublicAttendanceScanner() {
 
             // Auto-trigger scan if face is active and stable (instant without waiting for button click)
             if (!scanInProgressRef.current && !isProcessing && !scanResult) {
-              setStatusMsg('⚡ Face Detected — Verifying attendance...');
+              updateStatus('⚡ Face Detected — Verifying attendance...');
               handleExecuteScan();
             }
           } else {
-            setFaceDetected(false);
-            setLivenessVerified(false);
+            updateFaceDetected(false);
+            updateLiveness(false);
             latestDetectionRef.current = null;
             drawScanningCrosshairs(ctx, displaySize.width, displaySize.height);
             if (!isProcessing && !scanResult) {
-              setStatusMsg('Align your face inside the scanner frame...');
+              updateStatus('Align your face inside the scanner frame...');
             }
           }
         } catch (err) {

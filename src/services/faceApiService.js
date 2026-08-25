@@ -230,7 +230,7 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   const positions = detection.landmarks.positions;
 
   // 1. Detection confidence
-  if (score < 0.35) {
+  if (score < 0.30) {
     return {
       isFullFace: false,
       reason: 'Low confidence. Improve lighting and face the camera directly.',
@@ -238,9 +238,9 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
     };
   }
 
-  // 2. Boundary check — reject if face is cut off at the edge
-  const marginX = videoWidth * 0.04;
-  const marginY = videoHeight * 0.04;
+  // 2. Boundary check — reject if face is significantly cut off at the edge
+  const marginX = videoWidth * 0.02;
+  const marginY = videoHeight * 0.02;
   if (
     box.x < marginX ||
     box.y < marginY ||
@@ -255,8 +255,8 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   }
 
   // 3. Face size check — must not be too far away
-  const minWidth = videoWidth * 0.20;
-  const maxWidth = videoWidth * 0.95;
+  const minWidth = videoWidth * 0.18;
+  const maxWidth = videoWidth * 0.96;
   if (box.width < minWidth) {
     return {
       isFullFace: false,
@@ -301,14 +301,14 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   }
 
   const yawRatio = leftDist / rightDist;
-  if (yawRatio < 0.68) {
+  if (yawRatio < 0.55) {
     return {
       isFullFace: false,
       reason: 'Face turned left. Look towards the camera.',
       telemetry: { yawRatio }
     };
   }
-  if (yawRatio > 1.45) {
+  if (yawRatio > 1.80) {
     return {
       isFullFace: false,
       reason: 'Face turned right. Look towards the camera.',
@@ -319,7 +319,7 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   // 6. Both eyes must be visible
   const eyeSpan = Math.hypot(rightEyeOuter.x - leftEyeOuter.x, rightEyeOuter.y - leftEyeOuter.y);
   const eyeSpanRatio = eyeSpan / box.width;
-  if (eyeSpanRatio < 0.18) {
+  if (eyeSpanRatio < 0.16) {
     return {
       isFullFace: false,
       reason: 'Both eyes must be clearly visible. Remove any obstructions.',
@@ -331,7 +331,7 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   const dy = rightEyeOuter.y - leftEyeOuter.y;
   const dx = rightEyeOuter.x - leftEyeOuter.x;
   const tiltDegrees = Math.abs((Math.atan2(dy, dx) * 180) / Math.PI);
-  if (tiltDegrees > 16) {
+  if (tiltDegrees > 18) {
     return {
       isFullFace: false,
       reason: 'Head is tilted. Keep your head upright.',
@@ -367,7 +367,7 @@ export const validateFullFaceEnrollment = (detection, videoWidth = 640, videoHei
   const rightEyePts = detection.landmarks.getRightEye ? detection.landmarks.getRightEye() : positions.slice(42, 48);
   const avgEAR = (getPointEAR(leftEyePts) + getPointEAR(rightEyePts)) / 2.0;
 
-  if (avgEAR < 0.16) {
+  if (avgEAR < 0.12) {
     return {
       isFullFace: false,
       reason: 'Eyes closed. Please keep both eyes open.',

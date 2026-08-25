@@ -212,22 +212,38 @@ export const getDistanceToPolygon = (pointLat, pointLng, polygon) => {
   return minDistance;
 };
 
+let cachedGeofenceData = null;
+let lastGeofenceFetchTime = 0;
+
 /**
  * Evaluates whether coordinates (userLat, userLng) fall within ANY of the enterprise's authorized
  * office headquarters, branch offices, plant sites, or project sites.
  */
 export const evaluateMultiSiteGeofence = async (userLat, userLng) => {
   const candidateSites = [];
+  const now = Date.now();
 
   try {
-    // 1. Fetch HQ settings from settings table
-    const { data: settingsData } = await supabase
-      .from('settings')
-      .select('key, value')
-      .in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius', 'office_name']);
+    if (!cachedGeofenceData || (now - lastGeofenceFetchTime) > 20000) {
+      const [settingsRes, sitesRes] = await Promise.all([
+        supabase.from('settings').select('key, value').in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius', 'office_name']),
+        supabase.from('office_geofence').select('*').order('created_at', { ascending: false })
+      ]);
+      cachedGeofenceData = {
+        settings: settingsRes.data || [],
+        sites: sitesRes.data || []
+      };
+      lastGeofenceFetchTime = now;
+    }
+  } catch (e) {
+    console.warn('[GEOFENCE CACHE FETCH WARN]', e);
+  }
 
+  try {
+    // 1. Evaluate HQ settings
+    const settingsData = cachedGeofenceData?.settings || [];
     const settingsObj = {};
-    (settingsData || []).forEach(row => {
+    settingsData.forEach(row => {
       settingsObj[row.key] = row.value;
     });
 
@@ -253,11 +269,8 @@ export const evaluateMultiSiteGeofence = async (userLat, userLng) => {
   }
 
   try {
-    // 2. Fetch all registered sites & branch offices from office_geofence table
-    const { data: sitesData } = await supabase
-      .from('office_geofence')
-      .select('*')
-      .order('created_at', { ascending: false });
+    // 2. Evaluate registered sites & branch offices
+    const sitesData = cachedGeofenceData?.sites || [];
 
     (sitesData || []).forEach(site => {
       let polygon = null;

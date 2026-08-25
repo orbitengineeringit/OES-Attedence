@@ -2,8 +2,8 @@ import React, { useRef, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
-import { apiCall } from '../services/api.js';
-import { loadFaceApiModels, detectFaceBiometrics, validateFullFaceEnrollment, estimateHeadPose, faceapi } from '../services/faceApiService.js';
+import { apiCall, evaluateMultiSiteGeofence } from '../services/api.js';
+import { loadFaceApiModels, detectFaceBiometrics, validateFullFaceEnrollment, estimateHeadPose, checkFrameQuality, faceapi } from '../services/faceApiService.js';
 import { playBiometricSound } from '../services/soundService.js';
 import { MapContainer, TileLayer, Circle, Marker, Popup, useMap, Polygon } from 'react-leaflet';
 import L from 'leaflet';
@@ -308,29 +308,73 @@ export default function BiometricScanner() {
 
   const [nearestSiteInfo, setNearestSiteInfo] = useState({ name: 'Head Office', type: 'Head Office', distance: 0, radius: 100, isInside: false });
 
+  // Telemetry cache refs to prevent React 60 FPS re-render loops (fixes screen flickering)
+  const lastScoreRef = useRef(-1);
+  const lastProgressRef = useRef(-1);
+  const lastStatusMsgRef = useRef('');
+  const lastPoseRef = useRef('');
+  const lastWarningRef = useRef(null);
+
+  const updateTelemetryScore = (score) => {
+    if (score !== lastScoreRef.current) {
+      setRealtimeScore(score);
+      lastScoreRef.current = score;
+    }
+  };
+  const updateTelemetryProgress = (progress) => {
+    if (progress !== lastProgressRef.current) {
+      setTelemetryLockProgress(progress);
+      lastProgressRef.current = progress;
+    }
+  };
+  const updateTelemetryStatus = (msg) => {
+    if (msg !== lastStatusMsgRef.current) {
+      setScannerStatusMsg(msg);
+      lastStatusMsgRef.current = msg;
+    }
+  };
+  const updateTelemetryPose = (pose) => {
+    if (pose !== lastPoseRef.current) {
+      setTelemetryPose(pose);
+      lastPoseRef.current = pose;
+    }
+  };
+  const updateTelemetryWarning = (warning) => {
+    if (warning !== lastWarningRef.current) {
+      setFrameQualityWarning(warning);
+      lastWarningRef.current = warning;
+    }
+  };
+
   // Evaluate Multi-Site containment & nearest site whenever GPS coordinates fluctuate
   useEffect(() => {
     if (userCoords && userCoords.latitude && userCoords.longitude) {
-      import('../services/api.js').then(({ evaluateMultiSiteGeofence }) => {
-        evaluateMultiSiteGeofence(userCoords.latitude, userCoords.longitude).then(res => {
+      evaluateMultiSiteGeofence(userCoords.latitude, userCoords.longitude)
+        .then(res => {
           if (isComponentMounted.current && res) {
             setIsInside(res.isInside);
             const site = res.matchedSite || res.nearestSite;
             if (site) {
-              setNearestSiteInfo({
-                name: site.name,
-                type: site.type,
-                distance: Math.round(site.distance),
-                radius: site.radius,
-                isInside: site.isInside
+              setNearestSiteInfo(prev => {
+                const distRounded = Math.round(site.distance);
+                if (prev.name === site.name && prev.isInside === site.isInside && Math.abs(prev.distance - distRounded) < 3) {
+                  return prev;
+                }
+                return {
+                  name: site.name,
+                  type: site.type,
+                  distance: distRounded,
+                  radius: site.radius,
+                  isInside: site.isInside
+                };
               });
               setDistanceToOffice(site.distance);
             }
           }
-        }).catch(err => console.warn('Multi-site check error:', err));
-      });
+        })
+        .catch(err => console.warn('Multi-site check error:', err));
     }
-  }, [userCoords]);
+  }, [userCoords?.latitude, userCoords?.longitude]);
 
   // 1. Preload face-api.js neural networks on component mount
   useEffect(() => {
@@ -604,13 +648,12 @@ export default function BiometricScanner() {
       }
 
       try {
-        // 1. Run live frame quality check
-        const { checkFrameQuality } = await import('../services/faceApiService.js');
+        // 1. Run live frame quality check using static import
         const quality = checkFrameQuality(video);
         if (!quality.passed) {
-          setFrameQualityWarning(quality.warning);
-          setScannerStatusMsg(quality.warning.toUpperCase());
-          setTelemetryLockProgress(0);
+          updateTelemetryWarning(quality.warning);
+          updateTelemetryStatus(quality.warning.toUpperCase());
+          updateTelemetryProgress(0);
           
           ctx.strokeStyle = '#F59E0B'; // Amber alert warning box
           ctx.lineWidth = 3;
@@ -623,15 +666,15 @@ export default function BiometricScanner() {
           animationFrameIdRef.current = requestAnimationFrame(processFrame);
           return;
         }
-        setFrameQualityWarning(null);
+        updateTelemetryWarning(null);
 
         // 2. Run face detection
         const rawDetection = await detectFaceBiometrics(video);
 
         // 3. Reject if multiple faces detected
         if (rawDetection && rawDetection.multipleFaces) {
-          setScannerStatusMsg('MULTIPLE FACES DETECTED');
-          setTelemetryLockProgress(0);
+          updateTelemetryStatus('MULTIPLE FACES DETECTED');
+          updateTelemetryProgress(0);
           challengePassedRef.current = false;
           setChallengePassed(false);
           
@@ -648,11 +691,8 @@ export default function BiometricScanner() {
         }
 
         if (rawDetection) {
-          console.log('[DEBUG-DIAGNOSTIC] Face detected in Scanner view.');
-          console.log('[DEBUG-DIAGNOSTIC] Scanner Face Confidence Score:', rawDetection.detection.score);
-
           const detection = faceapi.resizeResults(rawDetection, displaySize);
-          setRealtimeScore(Math.round(detection.detection.score * 100));
+          updateTelemetryScore(Math.round(detection.detection.score * 100));
 
           // Extract key landmarks & EAR metrics for anti-spoof telemetry
           if (rawDetection.landmarks) {
@@ -693,32 +733,31 @@ export default function BiometricScanner() {
           // Fast 2-frame stability lock (~60ms) for instant verification
           consecutiveFrontFrames.current += 1;
           const progress = Math.min(100, Math.round((consecutiveFrontFrames.current / 2) * 100));
-          setTelemetryLockProgress(progress);
+          updateTelemetryProgress(progress);
 
           const isLocked = consecutiveFrontFrames.current >= 2 || cooldownActive.current;
           drawCustomDetections(ctx, detection, isLocked);
           drawCustomMesh(ctx, detection.landmarks, isLocked);
 
-          setTelemetryPose('front');
+          updateTelemetryPose('front');
 
           // Auto-trigger scan instantly once locked (2 frames)
           if (consecutiveFrontFrames.current >= 2 && !cooldownActive.current && !scanInProgress.current) {
-            console.log('[DEBUG LOG - ATTENDANCE TRIGGER] Face locked in 2 frames. Triggering instant biometric match...');
-            setScannerStatusMsg('⚡ Verifying Face & GPS...');
+            updateTelemetryStatus('⚡ Verifying Face & GPS...');
             handleAutoScan(rawDetection.descriptor);
           } else if (!cooldownActive.current && !scanInProgress.current) {
-            setScannerStatusMsg('⚡ Face Detected — Locking in...');
+            updateTelemetryStatus('⚡ Face Detected — Locking in...');
           }
         } else {
-          setRealtimeScore(0);
+          updateTelemetryScore(0);
           consecutiveFrontFrames.current = 0;
-          setTelemetryLockProgress(0);
-          setTelemetryPose('none');
+          updateTelemetryProgress(0);
+          updateTelemetryPose('none');
           blinkClosedRef.current = false;
         }
       } catch (err) {
         console.error('[BIOMETRIC SCAN LOOP ERROR]:', err);
-        setScannerStatusMsg('Scanning Face...');
+        updateTelemetryStatus('Scanning Face...');
         scanInProgress.current = false;
         blinkClosedRef.current = false;
       }

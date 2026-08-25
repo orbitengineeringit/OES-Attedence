@@ -341,8 +341,8 @@ export default function AdminPanel() {
     let fps = 60;
     let lastTime = performance.now();
 
-    // Use TinyFaceDetector with inputSize 224 and scoreThreshold 0.5 for accurate landmark alignment
-    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+    // Use TinyFaceDetector with inputSize 224 and scoreThreshold 0.35 for smooth landmark alignment without frame dropping
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.35 });
 
     // Blink-Liveness tracking state variables in closure
     let blinkStateVal = 'waitingForOpen'; // 'waitingForOpen' | 'waitingForClose' | 'waitingForReopen' | 'blinkDetected'
@@ -692,10 +692,10 @@ export default function AdminPanel() {
             const fullFaceCheck = validateFullFaceEnrollment(detection, videoWidth, videoHeight);
 
             if (!fullFaceCheck.isFullFace) {
-              // Half face, side profile, cut-off edge, or occluded face detected!
-              localStability = 0;
-              accumulatedDescriptors = [];
-              updateStability(0);
+              // Half face, side profile, or slight tilt: softly decay instead of abrupt zero-reset
+              localStability = Math.max(0, localStability - 1);
+              if (accumulatedDescriptors.length > 0) accumulatedDescriptors.pop();
+              updateStability(localStability);
 
               updateStatus('FACE DETECTED');
               updateMsg(fullFaceCheck.reason);
@@ -710,22 +710,21 @@ export default function AdminPanel() {
               // Diagnostic telemetry readouts
               drawUnmirroredText('STATUS: ALIGNMENT REQUIRED // FULL FACE ONLY', 20, 30, 'rgba(245, 158, 11, 0.95)', 'bold 11px \"Courier New\", monospace');
               drawUnmirroredText(`PROMPT: ${fullFaceCheck.reason.toUpperCase()}`, 20, 48, 'rgba(245, 158, 11, 0.85)', '9px \"Courier New\", monospace');
-              drawUnmirroredText(`YAW SYMMETRY  : ${fullFaceCheck.telemetry?.yawRatio ? fullFaceCheck.telemetry.yawRatio.toFixed(2) : 'N/A'} (REQ: 0.68 - 1.45)`, 20, 70, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
-              drawUnmirroredText(`HEAD TILT     : ${fullFaceCheck.telemetry?.tiltDegrees ? fullFaceCheck.telemetry.tiltDegrees.toFixed(1) + '°' : 'N/A'} (MAX: 16°)`, 20, 82, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
-              drawUnmirroredText(`EYE SPAN RATIO: ${fullFaceCheck.telemetry?.eyeSpanRatio ? (fullFaceCheck.telemetry.eyeSpanRatio * 100).toFixed(1) + '%' : 'N/A'} (MIN: 28%)`, 20, 94, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
-              drawUnmirroredText(`SYS.RESONANCE : ${(detection.detection.score * 100).toFixed(1)}% CONFIDENCE`, 20, 106, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
-              drawUnmirroredText(`FRAME ENGINE  : ${fps} FPS // CUDA_ACCEL`, 20, 118, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
+              drawUnmirroredText(`YAW SYMMETRY  : ${fullFaceCheck.telemetry?.yawRatio ? fullFaceCheck.telemetry.yawRatio.toFixed(2) : 'N/A'} (OPTIMAL: 0.5 - 2.0)`, 20, 70, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
+              drawUnmirroredText(`HEAD TILT     : ${fullFaceCheck.telemetry?.tiltDegrees ? fullFaceCheck.telemetry.tiltDegrees.toFixed(1) + '°' : 'N/A'} (MAX: 24°)`, 20, 82, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
+              drawUnmirroredText(`SYS.RESONANCE : ${(detection.detection.score * 100).toFixed(1)}% CONFIDENCE`, 20, 94, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
+              drawUnmirroredText(`FRAME ENGINE  : ${fps} FPS // CUDA_ACCEL`, 20, 106, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
 
             } else {
               // 2. Verified Full Frontal Face!
               accumulatedDescriptors.push(detection.descriptor);
               localStability += 1;
-              const stabilityValue = Math.min(5, localStability);
+              const stabilityValue = Math.min(3, localStability);
               updateStability(stabilityValue);
 
-              const lockPercent = Math.round((stabilityValue / 5) * 100);
+              const lockPercent = Math.round((stabilityValue / 3) * 100);
 
-              if (localStability < 5) {
+              if (localStability < 3) {
                 // Stabilizing frontal face signature
                 updateStatus('ANALYZING');
                 updateMsg(`Full face verified. Hold still (${lockPercent}% locked)...`);
@@ -736,7 +735,7 @@ export default function AdminPanel() {
                 drawHolographicOverlay(ctx, detection, videoWidth, videoHeight, true, 'locking', `LOCKING ${lockPercent}%`);
 
                 drawUnmirroredText('STATUS: FULL FACE DETECTED // BIOMETRIC LOCKING', 20, 30, 'rgba(6, 182, 212, 0.95)', 'bold 11px \"Courier New\", monospace');
-                drawUnmirroredText(`LOCK PROGRESS : ${lockPercent}% (${stabilityValue}/5 STABLE FRAMES)`, 20, 48, 'rgba(6, 182, 212, 0.85)', '9px \"Courier New\", monospace');
+                drawUnmirroredText(`LOCK PROGRESS : ${lockPercent}% (${stabilityValue}/3 STABLE FRAMES)`, 20, 48, 'rgba(6, 182, 212, 0.85)', '9px \"Courier New\", monospace');
                 drawUnmirroredText(`YAW SYMMETRY  : ${fullFaceCheck.telemetry.yawRatio.toFixed(2)} (OPTIMAL)`, 20, 70, 'rgba(34, 197, 94, 0.85)', '8px \"Courier New\", monospace');
                 drawUnmirroredText(`EYE APERTURE  : ${fullFaceCheck.telemetry.avgEAR.toFixed(3)} EAR (OPEN)`, 20, 82, 'rgba(34, 197, 94, 0.85)', '8px \"Courier New\", monospace');
                 drawUnmirroredText(`HEAD TILT     : ${fullFaceCheck.telemetry.tiltDegrees.toFixed(1)}° (UPRIGHT)`, 20, 94, 'rgba(34, 197, 94, 0.85)', '8px \"Courier New\", monospace');
@@ -744,10 +743,10 @@ export default function AdminPanel() {
                 drawUnmirroredText(`FRAME ENGINE  : ${fps} FPS // CUDA_ACCEL`, 20, 118, 'rgba(156, 163, 175, 0.8)', '8px \"Courier New\", monospace');
 
               } else {
-                // 3. Complete 5-frame full face lock!
+                // 3. Complete 3-frame full face lock!
                 livenessVerifiedVal = true;
                 blinkStateVal = 'blinkDetected';
-                updateStability(5);
+                updateStability(3);
                 updateLiveness(blinkStateVal, livenessVerifiedVal);
                 updateStatus('ENROLLING');
                 updateMsg('Full face biometric lock acquired. Saving template...');
@@ -757,7 +756,7 @@ export default function AdminPanel() {
                 playBiometricSound('capture');
                 wizardLoopActive.current = false; // Halt loop immediately
 
-                // Calculate high-fidelity mathematical average descriptor vector across all 5 full-face frames
+                // Calculate high-fidelity mathematical average descriptor vector across all full-face frames
                 const finalDescriptor = calculateAverageDescriptor(accumulatedDescriptors) || Array.from(detection.descriptor);
 
                 // Capture video frame onto offscreen canvas and convert to base64
