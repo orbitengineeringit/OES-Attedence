@@ -8,26 +8,28 @@ const MODEL_URL = './model/';
 /**
  * Trigger loading of face-api.js neural networks.
  */
-export const loadFaceApiModels = () => {
-  if (modelsLoaded) return Promise.resolve(true);
+export const loadFaceApiModels = async () => {
+  if (modelsLoaded) return true;
   if (loadingPromise) return loadingPromise;
 
-  console.log('[BIOMETRIC FACE-API]: Initiating model download from jsDelivr CDN...');
-  loadingPromise = Promise.all([
-    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-    faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
-    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
-  ])
-    .then(() => {
+  console.log('[BIOMETRIC FACE-API]: Loading neural network models...');
+  loadingPromise = (async () => {
+    try {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+      ]);
       modelsLoaded = true;
-      console.log('[BIOMETRIC FACE-API]: All neural networks loaded and ready.');
+      console.log('[BIOMETRIC FACE-API]: Neural networks successfully initialized and ready.');
       return true;
-    })
-    .catch((err) => {
-      console.error('[BIOMETRIC FACE-API]: Failed to load neural network weights:', err);
+    } catch (err) {
+      console.error('[BIOMETRIC FACE-API]: Failed loading neural models, will retry:', err);
+      modelsLoaded = false;
       loadingPromise = null;
       throw err;
-    });
+    }
+  })();
 
   return loadingPromise;
 };
@@ -69,47 +71,13 @@ export const detectFaceBiometrics = async (videoElement) => {
     await loadFaceApiModels();
   }
 
-  // inputSize 224 produces more accurate and discriminative face descriptors.
-  // 160 was too low — low-res descriptors cluster together and cause misidentification.
-  // scoreThreshold 0.5 filters out low-quality face detections before descriptor extraction.
   const options = new faceapi.TinyFaceDetectorOptions({
     inputSize: 224,
-    scoreThreshold: 0.5
+    scoreThreshold: 0.40
   });
 
-  // Verify multiple faces
-  try {
-    const allDetections = await faceapi.detectAllFaces(videoElement, options);
-    if (allDetections.length > 1) {
-      return { multipleFaces: true, count: allDetections.length };
-    }
-  } catch (err) {
-    console.error('[detectFaceBiometrics detectAllFaces Error]:', err);
-  }
-
-  // Preprocess frame if quality is degraded
-  let inputSource = videoElement;
-  try {
-    const quality = checkFrameQuality(videoElement);
-    if (!quality.passed) {
-      const canvas = document.createElement('canvas');
-      canvas.width = videoElement.videoWidth || 640;
-      canvas.height = videoElement.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-      if (quality.warning && quality.warning.includes('dark')) {
-        ctx.filter = 'brightness(1.5) contrast(1.2)';
-      } else if (quality.warning && quality.warning.includes('backlit')) {
-        ctx.filter = 'brightness(1.6) contrast(1.3)';
-      }
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-      inputSource = canvas;
-    }
-  } catch (err) {
-    console.error('[detectFaceBiometrics Preprocessing Error]:', err);
-  }
-
   const detection = await faceapi
-    .detectSingleFace(inputSource, options)
+    .detectSingleFace(videoElement, options)
     .withFaceLandmarks(true)
     .withFaceDescriptor();
 

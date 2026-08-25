@@ -57,6 +57,16 @@ export default function CameraFeed({ videoRef, cameraActive, modelsStatus, onSta
         </p>
       </div>
 
+      {modelsStatus === 'error' && onStartCamera && (
+        <button
+          onClick={() => window.location.reload()}
+          className="mt-1 inline-flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white font-medium py-2.5 px-6 rounded-xl text-xs sm:text-sm cursor-pointer transition-colors shadow-xs"
+        >
+          <RefreshCw className="w-4 h-4 text-white" />
+          Retry loading scanner
+        </button>
+      )}
+
       {modelsStatus === 'ready' && onStartCamera && (
         <button
           onClick={() => onStartCamera()}

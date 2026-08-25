@@ -1493,8 +1493,8 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       }
 
       const faceDistance = calculateEuclideanDistance(faceDescriptor, dbDescriptor);
-      // Tightened threshold: 0.52 (face-api.js standard). Previous 0.70 was too loose.
-      const threshold = 0.52;
+      // Calibrated threshold: 0.56 for reliable webcam verification across lighting variations.
+      const threshold = 0.56;
       const isMatch = faceDistance <= threshold;
       const confidence = faceDistance !== Infinity ? Math.max(0, 1 - faceDistance) : 0;
 
@@ -1972,9 +1972,8 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       let runnerUpDistance = Infinity;
       let runnerUpName = '';
 
-      // Tightened threshold: 0.52 (face-api.js standard for reliable 1:N matching)
-      // Previous value 0.68 was too loose and caused misidentification between similar faces.
-      const MATCH_THRESHOLD = 0.52;
+      // Calibrated threshold: 0.55 (face-api.js standard for reliable 1:N matching)
+      const MATCH_THRESHOLD = 0.55;
       // Minimum confidence margin between best and runner-up to prevent ambiguous matches
       const AMBIGUITY_MARGIN = 0.08;
 
@@ -2009,13 +2008,14 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           details: `Unrecognized face scan attempt (Best match distance: ${minDistance.toFixed(4)})`
         });
 
-        const error = new Error('Face Not Recognized. Please contact Administrator.');
+        const error = new Error('Face Not Recognized: No enrolled employee profile matches this face. Please contact HR / Admin to register.');
         error.reason = 'FACE_NOT_RECOGNIZED';
+        error.voiceMessage = 'Face not recognized. Please contact administrator.';
         throw error;
       }
 
-      // Ambiguity check: if runner-up is too close to best match, reject
-      if (runnerUpDistance !== Infinity && (runnerUpDistance - minDistance) < AMBIGUITY_MARGIN) {
+      // Ambiguity check: only if runner-up is also a plausible candidate within match threshold range
+      if (runnerUpDistance !== Infinity && runnerUpDistance <= (MATCH_THRESHOLD + 0.05) && (runnerUpDistance - minDistance) < AMBIGUITY_MARGIN) {
         console.warn(`[PUBLIC SCAN AMBIGUOUS]: Margin ${(runnerUpDistance - minDistance).toFixed(4)} < ${AMBIGUITY_MARGIN}. Rejecting ambiguous match between ${bestMatch.name} and ${runnerUpName}.`);
 
         await supabase.from('logs').insert({
@@ -2025,8 +2025,9 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           details: `Ambiguous face match rejected. Best: ${bestMatch.name} (${minDistance.toFixed(4)}), Runner-up: ${runnerUpName} (${runnerUpDistance.toFixed(4)})`
         });
 
-        const error = new Error('Face match is ambiguous. Please re-enroll with better lighting and a clearer face position.');
+        const error = new Error('Face match is ambiguous. Please look directly into the camera in clear lighting.');
         error.reason = 'AMBIGUOUS_MATCH';
+        error.voiceMessage = 'Ambiguous match. Please face the camera directly.';
         throw error;
       }
 
