@@ -69,11 +69,12 @@ export const detectFaceBiometrics = async (videoElement) => {
     await loadFaceApiModels();
   }
 
-  // inputSize 160 gives ultra-fast face detection matching real-world biometric scanner terminals
-  // scoreThreshold 0.4 allows faster detection at slight distance/angle
+  // inputSize 224 produces more accurate and discriminative face descriptors.
+  // 160 was too low — low-res descriptors cluster together and cause misidentification.
+  // scoreThreshold 0.5 filters out low-quality face detections before descriptor extraction.
   const options = new faceapi.TinyFaceDetectorOptions({
-    inputSize: 160,
-    scoreThreshold: 0.4
+    inputSize: 224,
+    scoreThreshold: 0.5
   });
 
   // Verify multiple faces

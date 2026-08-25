@@ -1395,7 +1395,8 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       }
 
       const faceDistance = calculateEuclideanDistance(faceDescriptor, dbDescriptor);
-      const threshold = 0.70;
+      // Tightened threshold: 0.52 (face-api.js standard). Previous 0.70 was too loose.
+      const threshold = 0.52;
       const isMatch = faceDistance <= threshold;
       const confidence = faceDistance !== Infinity ? Math.max(0, 1 - faceDistance) : 0;
 
@@ -1848,24 +1849,41 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         throw new Error('No registered employees found with face biometrics in system database.');
       }
 
-      // Match face against all registered templates
+      // Match face against all registered templates — pick the CLOSEST match
       let bestMatch = null;
       let minDistance = Infinity;
-      const MATCH_THRESHOLD = 0.68;
+      let runnerUpDistance = Infinity;
+      let runnerUpName = '';
+
+      // Tightened threshold: 0.52 (face-api.js standard for reliable 1:N matching)
+      // Previous value 0.68 was too loose and caused misidentification between similar faces.
+      const MATCH_THRESHOLD = 0.52;
+      // Minimum confidence margin between best and runner-up to prevent ambiguous matches
+      const AMBIGUITY_MARGIN = 0.08;
 
       for (const emp of employeesWithFace) {
         const dbDescriptor = await decryptDescriptor(emp.face_data);
         if (!dbDescriptor) continue;
 
         const distance = calculateEuclideanDistance(faceDescriptor, dbDescriptor);
+        console.log(`[PUBLIC SCAN]: Comparing against ${emp.name} — distance: ${distance.toFixed(4)}`);
+
         if (distance < minDistance) {
+          runnerUpDistance = minDistance;
+          runnerUpName = bestMatch?.name || '';
           minDistance = distance;
           bestMatch = emp;
+        } else if (distance < runnerUpDistance) {
+          runnerUpDistance = distance;
+          runnerUpName = emp.name;
         }
       }
 
+      console.log(`[PUBLIC SCAN]: Best match: ${bestMatch?.name} (${minDistance.toFixed(4)}), Runner-up: ${runnerUpName} (${runnerUpDistance.toFixed(4)})`);
+
+      // Reject if best match exceeds threshold
       if (!bestMatch || minDistance > MATCH_THRESHOLD) {
-        console.warn(`[PUBLIC SCAN MISMATCH]: Minimum distance ${minDistance.toFixed(4)} exceeds threshold ${MATCH_THRESHOLD}`);
+        console.warn(`[PUBLIC SCAN MISMATCH]: Best distance ${minDistance.toFixed(4)} exceeds threshold ${MATCH_THRESHOLD}`);
         
         await supabase.from('logs').insert({
           employee_id: null,
@@ -1878,6 +1896,23 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         error.reason = 'FACE_NOT_RECOGNIZED';
         throw error;
       }
+
+      // Ambiguity check: if runner-up is too close to best match, reject
+      if (runnerUpDistance !== Infinity && (runnerUpDistance - minDistance) < AMBIGUITY_MARGIN) {
+        console.warn(`[PUBLIC SCAN AMBIGUOUS]: Margin ${(runnerUpDistance - minDistance).toFixed(4)} < ${AMBIGUITY_MARGIN}. Rejecting ambiguous match between ${bestMatch.name} and ${runnerUpName}.`);
+
+        await supabase.from('logs').insert({
+          employee_id: null,
+          event_type: 'UNAUTHORIZED_SCAN',
+          location: location || 'Public Terminal',
+          details: `Ambiguous face match rejected. Best: ${bestMatch.name} (${minDistance.toFixed(4)}), Runner-up: ${runnerUpName} (${runnerUpDistance.toFixed(4)})`
+        });
+
+        const error = new Error('Face match is ambiguous. Please re-enroll with better lighting and a clearer face position.');
+        error.reason = 'AMBIGUOUS_MATCH';
+        throw error;
+      }
+
 
       const matchedEmployee = bestMatch;
       const employeeId = matchedEmployee.id;
