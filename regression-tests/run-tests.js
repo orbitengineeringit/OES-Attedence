@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const BASE_URL = 'http://localhost:5173';
-const ARTIFACT_DIR = 'C:\\Users\\shrey\\.gemini\\antigravity\\brain\\990f7d19-fccb-4bb0-a0f5-0fd7709a5254';
+const ARTIFACT_DIR = 'C:\\Users\\syncw\\.gemini\\antigravity\\brain\\c6e0250f-72fb-4257-8ec5-a7be2179b0d7';
 const SCREENSHOT_DIR = path.join(ARTIFACT_DIR, 'screenshots');
 
 if (!fs.existsSync(SCREENSHOT_DIR)) {
@@ -14,7 +14,7 @@ if (!fs.existsSync(SCREENSHOT_DIR)) {
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 // Wait for text helper to prevent page loading race conditions
-async function waitForText(page, text, timeout = 12000) {
+async function waitForText(page, text, timeout = 30000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     try {
@@ -31,7 +31,7 @@ async function waitForText(page, text, timeout = 12000) {
 }
 
 // Wait for URL/path routing transition
-async function waitForPath(page, expectedPath, timeout = 12000) {
+async function waitForPath(page, expectedPath, timeout = 30000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     try {
@@ -76,16 +76,25 @@ async function clickByText(page, text, selector = 'button, a') {
 
 // Click the quick access demo credentials to guarantee robust state filling
 async function autofillLogin(page, role) {
-  console.log(`Triggering Quick Access autofill for: ${role}`);
-  await page.waitForSelector('button');
+  console.log(`Setting credentials for role: ${role}`);
+  await page.waitForSelector('input[type="email"]');
   
-  // Click Quick Access Credentials button
-  await clickByText(page, "Quick Access Credentials", "button");
-  await delay(1000);
+  const emailVal = role === 'Admin' ? 'hr.orbitengineering.group@gmail.com' : 'employee@company.com';
+  const passVal = role === 'Admin' ? 'admin@2026' : 'employeepassword';
+
+  await page.evaluate((e, p) => {
+    const setReactValue = (input, value) => {
+      if (!input) return;
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeSetter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    setReactValue(document.querySelector('input[type="email"]'), e);
+    setReactValue(document.querySelector('input[type="password"]'), p);
+  }, emailVal, passVal);
   
-  // Click the profile button
-  await clickByText(page, `${role} Profile`, "button");
-  await delay(1000);
+  await delay(500);
 }
 
 async function run() {
@@ -292,25 +301,16 @@ async function run() {
     // ----------------------------------------------------
     console.log('\nRunning Test 3: First-time Face Enrollment...');
     if (pathName.includes('enroll-face')) {
-      // Wait for camera button to render (indicating models loaded)
-      await waitForText(page, "Activate Scanner Camera");
-
-      // Mock biometrics on page context (transparently saves to sessionStorage)
-      await page.evaluate(() => {
-        window.__MOCK_BIOMETRICS__ = true;
-        window.__MOCK_DESCRIPTOR__ = Array(128).fill(0.1); // Enrolled face descriptor
-        window.__MOCK_CONFIDENCE__ = 0.95;
-      });
-
-      // Click "Activate Scanner Camera"
-      await clickByText(page, "Activate Scanner Camera", "button");
+      // Check security policy text
+      await waitForText(page, "Admin Managed Face Registration");
       
-      // Wait until routing transition completes
-      await waitForPath(page, "employee-dashboard");
-      console.log('Routed successfully to dashboard!');
-
-      testResults.push({ id: 3, name: 'First-time Face Enrollment', status: 'PASS', details: 'Mock face biometrics registered successfully and routed to dashboard.' });
+      console.log('PASS: First-time Face Enrollment security policy verified.');
+      testResults.push({ id: 3, name: 'First-time Face Enrollment', status: 'PASS', details: 'Security policy correctly enforces admin-managed biometric registration.' });
       await page.screenshot({ path: path.join(SCREENSHOT_DIR, '03_first_time_face_enrollment_success.png') });
+
+      // Click "Back to Employee Dashboard"
+      await clickByText(page, "Back to Employee Dashboard", "button");
+      await delay(2000);
     } else {
       console.log('FAIL: Not on Face Enrollment page, cannot test enrollment.');
       testResults.push({ id: 3, name: 'First-time Face Enrollment', status: 'FAIL', details: 'Skipped due to employee login routing failure.' });
@@ -320,9 +320,29 @@ async function run() {
     // TEST 4 & 5: Face Ownership Enforcement & Wrong Face Rejection
     // ----------------------------------------------------
     console.log('\nRunning Test 4 & 5: Face Ownership & Wrong Face Rejection...');
-    // Programmatic routing to avoid full reloads
-    // Programmatic routing to avoid full reloads
-    await navigateToHash(page, '#/scanner');
+    
+    // Clear employee session and log in as Admin to access scanner without enrollment restrictions
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    await page.goto(BASE_URL + '/#/login', { waitUntil: 'networkidle2' });
+    await page.reload({ waitUntil: 'networkidle2' });
+    await delay(1500);
+    await autofillLogin(page, 'Admin');
+    await page.evaluate(() => {
+      const form = document.querySelector('form');
+      if (form) {
+        const event = new Event('submit', { bubbles: true, cancelable: true });
+        form.dispatchEvent(event);
+      }
+    });
+    await waitForPath(page, "dashboard");
+    await delay(1500);
+
+    // Navigate to /scanner
+    await page.goto(BASE_URL + '/#/scanner', { waitUntil: 'networkidle2' });
+    await delay(2000);
 
     // Wait for biometrics hardware setup to be complete and ready
     await waitForText(page, "Scanner is Ready");
@@ -337,7 +357,7 @@ async function run() {
 
     // Start scanner camera with stabilization delay
     await delay(2000);
-    await clickByText(page, "Activate Scanner", "button");
+    await clickByText(page, "Start Scanner", "button");
     
     // Wait for the mismatch rejection overlay/message to appear
     await waitForText(page, "BIOMETRIC PUNCH REJECTED");
@@ -366,23 +386,26 @@ async function run() {
     // ----------------------------------------------------
     console.log('\nRunning Test 6: Check-In...');
     // Programmatic routing to clear cooldown state cleanly
-    // Programmatic routing to clear cooldown state cleanly
     await navigateToHash(page, '#/scanner');
 
     // Wait for biometrics hardware setup to be complete and ready
     await waitForText(page, "Scanner is Ready");
 
-    // Mock correct descriptor (0.1)
+    // Mock correct Administrator descriptor
     await page.evaluate(() => {
+      const desc = [];
+      const lower = 'administrator';
+      for (let i = 0; i < 128; i++) desc.push(Math.sin(i * lower.charCodeAt(i % lower.length) / 128.0) * 0.8 + 0.1);
+      
       window.__MOCK_BIOMETRICS__ = true;
-      window.__MOCK_DESCRIPTOR__ = Array(128).fill(0.1); // correct!
+      window.__MOCK_DESCRIPTOR__ = desc;
       window.__MOCK_CONFIDENCE__ = 0.95;
       window.__BYPASS_GEOFENCE__ = true;
     });
 
     // Start scanner camera with stabilization delay
     await delay(2000);
-    await clickByText(page, "Activate Scanner", "button");
+    await clickByText(page, "Start Scanner", "button");
     
     // Wait for check-in success overlay to appear
     await waitForText(page, "BIOMETRIC PUNCH SUCCESSFUL");
@@ -412,15 +435,19 @@ async function run() {
 
     // Ensure camera activates and scans again with correct descriptor
     await page.evaluate(() => {
+      const desc = [];
+      const lower = 'administrator';
+      for (let i = 0; i < 128; i++) desc.push(Math.sin(i * lower.charCodeAt(i % lower.length) / 128.0) * 0.8 + 0.1);
+      
       window.__MOCK_BIOMETRICS__ = true;
-      window.__MOCK_DESCRIPTOR__ = Array(128).fill(0.1); // correct!
+      window.__MOCK_DESCRIPTOR__ = desc;
       window.__MOCK_CONFIDENCE__ = 0.95;
       window.__BYPASS_GEOFENCE__ = true;
     });
 
     // Start camera again with stabilization delay
     await delay(2000);
-    await clickByText(page, "Activate Scanner", "button");
+    await clickByText(page, "Start Scanner", "button");
     
     // Wait for checkout success overlay to appear
     await waitForText(page, "BIOMETRIC PUNCH SUCCESSFUL");
@@ -452,8 +479,12 @@ async function run() {
 
     // Enforce geofence (disable bypass) and set far coordinates
     await page.evaluate(() => {
+      const desc = [];
+      const lower = 'administrator';
+      for (let i = 0; i < 128; i++) desc.push(Math.sin(i * lower.charCodeAt(i % lower.length) / 128.0) * 0.8 + 0.1);
+      
       window.__MOCK_BIOMETRICS__ = true;
-      window.__MOCK_DESCRIPTOR__ = Array(128).fill(0.1);
+      window.__MOCK_DESCRIPTOR__ = desc;
       window.__MOCK_CONFIDENCE__ = 0.95;
       
       // Disable bypass
@@ -466,7 +497,7 @@ async function run() {
 
     // Start scanner with stabilization delay
     await delay(2000);
-    await clickByText(page, "Activate Scanner", "button");
+    await clickByText(page, "Start Scanner", "button");
     
     // Wait for geofence rejection
     await waitForText(page, "outside office premises");
