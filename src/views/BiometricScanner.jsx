@@ -306,28 +306,31 @@ export default function BiometricScanner() {
     };
   }, []);
 
-  // Compute live geodetic distance / Polygon containment whenever GPS coordinates fluctuate
+  const [nearestSiteInfo, setNearestSiteInfo] = useState({ name: 'Head Office', type: 'Head Office', distance: 0, radius: 100, isInside: false });
+
+  // Evaluate Multi-Site containment & nearest site whenever GPS coordinates fluctuate
   useEffect(() => {
-    if (userCoords && officeCoords) {
-      if (activePolygon && activePolygon.length >= 3) {
-        // Use real-time Point-In-Polygon math if enterprise boundary mapped
-        const insidePolygon = isPointInPolygon(userCoords.latitude, userCoords.longitude, activePolygon);
-        setIsInside(insidePolygon);
-        // Calculate raw distance to center just for telemetry overlay
-        setDistanceToOffice(calculateDistance(userCoords.latitude, userCoords.longitude, officeCoords[0], officeCoords[1]));
-      } else {
-        // Fallback to static legacy radius
-        const dist = calculateDistance(
-          userCoords.latitude,
-          userCoords.longitude,
-          officeCoords[0],
-          officeCoords[1]
-        );
-        setDistanceToOffice(dist);
-        setIsInside(dist <= geofenceRadius);
-      }
+    if (userCoords && userCoords.latitude && userCoords.longitude) {
+      import('../services/api.js').then(({ evaluateMultiSiteGeofence }) => {
+        evaluateMultiSiteGeofence(userCoords.latitude, userCoords.longitude).then(res => {
+          if (isComponentMounted.current && res) {
+            setIsInside(res.isInside);
+            const site = res.matchedSite || res.nearestSite;
+            if (site) {
+              setNearestSiteInfo({
+                name: site.name,
+                type: site.type,
+                distance: Math.round(site.distance),
+                radius: site.radius,
+                isInside: site.isInside
+              });
+              setDistanceToOffice(site.distance);
+            }
+          }
+        }).catch(err => console.warn('Multi-site check error:', err));
+      });
     }
-  }, [userCoords, officeCoords, geofenceRadius, activePolygon]);
+  }, [userCoords]);
 
   // 1. Preload face-api.js neural networks on component mount
   useEffect(() => {
@@ -1025,15 +1028,17 @@ export default function BiometricScanner() {
             <div className="flex items-center gap-2.5 flex-1 min-w-0">
               <MapPin className="w-4 h-4 shrink-0" />
               <div className="min-w-0">
-                <p className="text-[11px] text-slate-500 leading-none">Location status</p>
+                <p className="text-[11px] text-slate-500 leading-none">
+                  {nearestSiteInfo.name ? `Site: ${nearestSiteInfo.name}` : 'Location status'}
+                </p>
                 <h4 className="mt-1 truncate text-xs sm:text-sm font-semibold">
                   {gpsLoading
                     ? 'Acquiring GPS signal'
                     : gpsError
                     ? 'Location permission required'
                     : isInside
-                    ? 'Inside approved office area'
-                    : 'Outside configured boundary'}
+                    ? `Inside ${nearestSiteInfo.name || 'Office'}`
+                    : `Outside ${nearestSiteInfo.name || 'Office'} (${nearestSiteInfo.distance}m away)`}
                 </h4>
               </div>
             </div>

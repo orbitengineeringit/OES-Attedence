@@ -212,6 +212,153 @@ export const getDistanceToPolygon = (pointLat, pointLng, polygon) => {
   return minDistance;
 };
 
+/**
+ * Evaluates whether coordinates (userLat, userLng) fall within ANY of the enterprise's authorized
+ * office headquarters, branch offices, plant sites, or project sites.
+ */
+export const evaluateMultiSiteGeofence = async (userLat, userLng) => {
+  const candidateSites = [];
+
+  try {
+    // 1. Fetch HQ settings from settings table
+    const { data: settingsData } = await supabase
+      .from('settings')
+      .select('key, value')
+      .in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius', 'office_name']);
+
+    const settingsObj = {};
+    (settingsData || []).forEach(row => {
+      settingsObj[row.key] = row.value;
+    });
+
+    const hqLat = parseFloat(settingsObj.geofence_lat) || 28.6139;
+    const hqLng = parseFloat(settingsObj.geofence_lng) || 77.2090;
+    const hqRadius = parseFloat(settingsObj.geofence_radius) || 100;
+    const hqName = settingsObj.office_name || 'Head Office';
+
+    const hqDist = calculateDistance(userLat, userLng, hqLat, hqLng);
+    candidateSites.push({
+      id: 'hq_default',
+      name: hqName,
+      type: 'Head Office',
+      latitude: hqLat,
+      longitude: hqLng,
+      radius: hqRadius,
+      distance: hqDist,
+      isInside: hqDist <= (hqRadius + 50),
+      polygon: null
+    });
+  } catch (err) {
+    console.warn('[MULTI-SITE HQ FETCH ERROR]', err);
+  }
+
+  try {
+    // 2. Fetch all registered sites & branch offices from office_geofence table
+    const { data: sitesData } = await supabase
+      .from('office_geofence')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    (sitesData || []).forEach(site => {
+      let polygon = null;
+      let siteLat = null;
+      let siteLng = null;
+      let siteRadius = 100;
+      let siteType = 'Project Site';
+      let isInside = false;
+      let dist = Infinity;
+
+      if (site.polygon_coordinates) {
+        try {
+          const parsed = typeof site.polygon_coordinates === 'string'
+            ? JSON.parse(site.polygon_coordinates)
+            : site.polygon_coordinates;
+
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            if (parsed.lat !== undefined && parsed.lng !== undefined) {
+              siteLat = parseFloat(parsed.lat);
+              siteLng = parseFloat(parsed.lng);
+            }
+            if (parsed.radius !== undefined) {
+              siteRadius = parseFloat(parsed.radius);
+            }
+            if (parsed.type) {
+              siteType = parsed.type;
+            }
+            if (Array.isArray(parsed.polygon) && parsed.polygon.length >= 3) {
+              polygon = parsed.polygon;
+            }
+          } else if (Array.isArray(parsed) && parsed.length >= 3) {
+            polygon = parsed;
+            const validPoints = parsed.map(p => ({
+              lat: p.lat !== undefined ? parseFloat(p.lat) : parseFloat(p.latitude),
+              lng: p.lng !== undefined ? parseFloat(p.lng) : parseFloat(p.longitude)
+            })).filter(p => !isNaN(p.lat) && !isNaN(p.lng));
+
+            if (validPoints.length > 0) {
+              siteLat = validPoints.reduce((acc, p) => acc + p.lat, 0) / validPoints.length;
+              siteLng = validPoints.reduce((acc, p) => acc + p.lng, 0) / validPoints.length;
+            }
+          }
+        } catch (e) {
+          console.error('[MULTI-SITE PARSE ERROR]', e);
+        }
+      }
+
+      if (siteLat !== null && siteLng !== null && !isNaN(siteLat) && !isNaN(siteLng)) {
+        dist = calculateDistance(userLat, userLng, siteLat, siteLng);
+        isInside = dist <= (siteRadius + 50);
+      }
+
+      if (polygon && Array.isArray(polygon) && polygon.length >= 3) {
+        const normalizedPolygon = polygon.map(p => ({
+          lat: p.lat !== undefined ? parseFloat(p.lat) : parseFloat(p.latitude),
+          lng: p.lng !== undefined ? parseFloat(p.lng) : parseFloat(p.longitude)
+        })).filter(p => !isNaN(p.lat) && !isNaN(p.lng));
+
+        const inPoly = isPointInPolygon(userLat, userLng, normalizedPolygon);
+        if (inPoly) {
+          isInside = true;
+        } else {
+          const polyDist = getDistanceToPolygon(userLat, userLng, normalizedPolygon);
+          if (polyDist <= 50) isInside = true;
+          dist = Math.min(dist, polyDist);
+        }
+      }
+
+      candidateSites.push({
+        id: site.id,
+        name: site.office_name || 'Project Site',
+        type: siteType,
+        latitude: siteLat,
+        longitude: siteLng,
+        radius: siteRadius,
+        distance: dist,
+        isInside,
+        polygon
+      });
+    });
+  } catch (err) {
+    console.warn('[MULTI-SITE SITES FETCH ERROR]', err);
+  }
+
+  // Sort candidate sites by distance (closest first)
+  candidateSites.sort((a, b) => a.distance - b.distance);
+
+  const matchedSite = candidateSites.find(s => s.isInside) || null;
+  const nearestSite = candidateSites[0] || null;
+
+  const BYPASS_GEOFENCE = typeof window !== 'undefined' && window.__BYPASS_GEOFENCE__ !== undefined ? window.__BYPASS_GEOFENCE__ : false;
+  const finalIsInside = BYPASS_GEOFENCE || Boolean(matchedSite);
+
+  return {
+    isInside: finalIsInside,
+    matchedSite: matchedSite || (BYPASS_GEOFENCE ? nearestSite : null),
+    nearestSite,
+    allSites: candidateSites
+  };
+};
+
 // ==========================================
 // 3. SYSTEM BIOMETRIC ENGINE HELPERS
 // ==========================================
@@ -795,59 +942,90 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       return { success: true, message: 'Settings saved successfully.' };
     }
 
-    // 10. GET /settings/geofence (Get polygon coordinates)
-    if (endpoint === '/settings/geofence' && method === 'GET') {
-      if (cache.geofence) {
-        // Background refresh
-        setTimeout(async () => {
-          try {
-            const { data } = await supabase
-              .from('office_geofence')
-              .select('*')
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
-            if (data) cache.geofence = data;
-          } catch (e) {}
-        }, 50);
-        return { success: true, geofence: cache.geofence };
-      }
-
+    // 10. GET /settings/geofences (Get ALL registered office & project site geofences)
+    if ((endpoint === '/settings/geofences' || endpoint === '/settings/geofence') && method === 'GET') {
       const { data, error } = await supabase
         .from('office_geofence')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .order('created_at', { ascending: false });
+
       if (error) throw new Error(error.message);
-      cache.geofence = data || null;
-      return { success: true, geofence: data || null };
+
+      // Parse JSON polygon_coordinates for convenience
+      const formatted = (data || []).map(row => {
+        let parsed = row.polygon_coordinates;
+        if (typeof parsed === 'string') {
+          try { parsed = JSON.parse(parsed); } catch (e) {}
+        }
+        return {
+          ...row,
+          parsedCoordinates: parsed
+        };
+      });
+
+      return { success: true, geofences: formatted, geofence: formatted[0] || null };
     }
 
-    // 11. POST /settings/geofence (Add geofence polygon)
-    if (endpoint === '/settings/geofence' && method === 'POST') {
+    // 11. POST /settings/geofences (Add new office or project site geofence)
+    if ((endpoint === '/settings/geofences' || endpoint === '/settings/geofence') && method === 'POST') {
       cache.geofence = null; // Invalidate
       const { 
         officeName, office_name,
+        type, category,
+        latitude, lat,
+        longitude, lng,
+        radius,
         polygonCoordinates, polygon_coordinates,
         createdBy, created_by 
       } = body || {};
 
-      const officeNameVal = (officeName || office_name || 'Main Office').trim();
-      const polygonCoordsVal = polygonCoordinates || polygon_coordinates;
+      const nameVal = (officeName || office_name || 'Project Site').trim();
+      const typeVal = type || category || 'Project Site';
+      const latVal = latitude !== undefined ? parseFloat(latitude) : (lat !== undefined ? parseFloat(lat) : null);
+      const lngVal = longitude !== undefined ? parseFloat(longitude) : (lng !== undefined ? parseFloat(lng) : null);
+      const radiusVal = parseInt(radius, 10) || 100;
+      const polygonCoordsVal = polygonCoordinates || polygon_coordinates || null;
       const createdByVal = createdBy || created_by;
 
-      if (!polygonCoordsVal || !Array.isArray(polygonCoordsVal) || polygonCoordsVal.length < 3) {
-        throw new Error('Invalid polygon geometry. At least 3 points are required.');
+      // Pack metadata if polygon or circle
+      let payloadCoords = polygonCoordsVal;
+      if (!payloadCoords && latVal !== null && lngVal !== null) {
+        payloadCoords = {
+          lat: latVal,
+          lng: lngVal,
+          radius: radiusVal,
+          type: typeVal
+        };
+      } else if (Array.isArray(payloadCoords) && (latVal !== null || typeVal)) {
+        payloadCoords = {
+          lat: latVal,
+          lng: lngVal,
+          radius: radiusVal,
+          type: typeVal,
+          polygon: payloadCoords
+        };
       }
 
-      const { error } = await supabase.from('office_geofence').insert({
-        office_name: officeNameVal,
-        polygon_coordinates: polygonCoordsVal,
+      if (!payloadCoords) {
+        throw new Error('Invalid site coordinates. Latitude and Longitude or Polygon points are required.');
+      }
+
+      const { data: inserted, error } = await supabase.from('office_geofence').insert({
+        office_name: nameVal,
+        polygon_coordinates: payloadCoords,
         created_by: createdByVal || null
-      });
+      }).select().single();
+
       if (error) throw new Error(error.message);
-      return { success: true, message: 'Office geofence polygon saved successfully.' };
+      return { success: true, message: `Site location "${nameVal}" added successfully.`, site: inserted };
+    }
+
+    // 11b. DELETE /settings/geofences/:id (Delete site geofence)
+    if (endpoint.startsWith('/settings/geofences/') && method === 'DELETE') {
+      const siteId = endpoint.split('/settings/geofences/')[1];
+      const { error } = await supabase.from('office_geofence').delete().eq('id', siteId);
+      if (error) throw new Error(error.message);
+      return { success: true, message: 'Office/Site location deleted successfully.' };
     }
 
 
@@ -1235,80 +1413,12 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       const officeLng = settingsObj.geofence_lng || 77.2090;
       const radius = settingsObj.geofence_radius || 100; // Default to 100m geofence
 
-      // Retrieve polygon geofence
-      const { data: activeGeofence } = await supabase
-        .from('office_geofence')
-        .select('polygon_coordinates')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      let insidePolygon = false;
-      let polygonBased = false;
-      let loadedPolygon = null;
-
-      if (activeGeofence && activeGeofence.polygon_coordinates) {
-        try {
-          loadedPolygon = typeof activeGeofence.polygon_coordinates === 'string'
-            ? JSON.parse(activeGeofence.polygon_coordinates)
-            : activeGeofence.polygon_coordinates;
-
-          // Highly defensive coordinate normalization
-          const normalizedPolygon = (Array.isArray(loadedPolygon) ? loadedPolygon : []).map(p => {
-            if (!p || typeof p !== 'object') return null;
-            const lat = p.lat !== undefined ? p.lat : p.latitude;
-            const lng = p.lng !== undefined ? p.lng : p.longitude;
-            return { lat: parseFloat(lat), lng: parseFloat(lng) };
-          }).filter(p => p !== null && !isNaN(p.lat) && !isNaN(p.lng));
-
-          insidePolygon = isPointInPolygon(latitude, longitude, normalizedPolygon);
-          polygonBased = true;
-
-          // 50-meter tolerance check if outside polygon
-          if (!insidePolygon) {
-            const polyDist = getDistanceToPolygon(latitude, longitude, normalizedPolygon);
-            if (polyDist <= 50) {
-              insidePolygon = true;
-            }
-          }
-        } catch (e) {
-          console.error('[GEOFENCE PARSE ERROR]', e);
-        }
-      }
-
-      // Legacy circular distance check (+50m buffer)
-      const distance = calculateDistance(latitude, longitude, officeLat, officeLng);
-      const insideRadius = distance <= (radius + 50);
-
-      // Full GPS Debug Logging
-      console.log('====================================================');
-      console.log('[GEOFENCE COORDINATES UPDATE]');
-      console.log('USER LAT:', latitude);
-      console.log('USER LNG:', longitude);
-      console.log('OFFICE LAT:', officeLat);
-      console.log('OFFICE LNG:', officeLng);
-      console.log('SETTINGS RADIUS:', settingsObj.geofence_radius);
-      console.log('ACTIVE VALIDATION RADIUS:', radius);
-      console.log('insidePolygon:', insidePolygon);
-      console.log('insideRadius (with 50m buffer):', insideRadius);
-      console.log('distance:', distance);
-      console.log('allowedRadius:', radius);
-      console.log('Loaded polygon:', loadedPolygon);
-      console.log('====================================================');
-
-      let isInside = false;
-      if (polygonBased) {
-        isInside = insidePolygon || insideRadius; // Fallback safety layer
-      } else {
-        isInside = insideRadius;
-      }
-
-      // Temp Test Override (default to false, check test injection)
+      const multiSiteResult = await evaluateMultiSiteGeofence(latitude, longitude);
       const BYPASS_GEOFENCE = typeof window !== 'undefined' && window.__BYPASS_GEOFENCE__ !== undefined ? window.__BYPASS_GEOFENCE__ : false;
+      let isInside = multiSiteResult.isInside || BYPASS_GEOFENCE;
+      const matchedSite = multiSiteResult.matchedSite;
+      const nearestSite = multiSiteResult.nearestSite;
       console.log('[GEOFENCE COORDINATES UPDATE] Bypass Status:', BYPASS_GEOFENCE);
-      if (BYPASS_GEOFENCE) {
-        isInside = true;
-      }
 
       const status = isInside ? 'Online' : 'Outside Office Limit';
       await supabase.from('employees').update({ status }).eq('id', empId);
@@ -1596,91 +1706,24 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         throw new Error('Incorrect timezone configuration. Access denied.');
       }
 
-      // 1. Fetch Geofence Circular / Radius Settings First for circular fallback and logging
-      const { data: settingsData } = await supabase
-        .from('settings')
-        .select('key, value')
-        .in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius']);
-      
-      const settingsObj = {};
-      (settingsData || []).forEach(row => {
-        settingsObj[row.key] = parseFloat(row.value);
-      });
+      // 1. Multi-Site Geofence Evaluation across all enterprise offices, branches, and project sites
+      const geofenceResult = await evaluateMultiSiteGeofence(userLat, userLng);
+      const isInside = geofenceResult.isInside;
+      const matchedSite = geofenceResult.matchedSite;
+      const nearestSite = geofenceResult.nearestSite;
+      const activeLocationName = matchedSite ? matchedSite.name : (location || 'Office');
 
-      const officeLat = settingsObj.geofence_lat || 28.6139;
-      const officeLng = settingsObj.geofence_lng || 77.2090;
-      const radius = settingsObj.geofence_radius || 100; // Default to 100m geofence
-
-      // 2. Retrieve advanced Polygon Geofence
-      const { data: activeGeofence } = await supabase
-        .from('office_geofence')
-        .select('polygon_coordinates')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      let insidePolygon = false;
-      let polygonBased = false;
-      let loadedPolygon = null;
-
-      if (activeGeofence && activeGeofence.polygon_coordinates) {
-        try {
-          loadedPolygon = typeof activeGeofence.polygon_coordinates === 'string'
-            ? JSON.parse(activeGeofence.polygon_coordinates)
-            : activeGeofence.polygon_coordinates;
-
-          // Highly defensive coordinate normalization
-          const normalizedPolygon = (Array.isArray(loadedPolygon) ? loadedPolygon : []).map(p => {
-            if (!p || typeof p !== 'object') return null;
-            const lat = p.lat !== undefined ? p.lat : p.latitude;
-            const lng = p.lng !== undefined ? p.lng : p.longitude;
-            return { lat: parseFloat(lat), lng: parseFloat(lng) };
-          }).filter(p => p !== null && !isNaN(p.lat) && !isNaN(p.lng));
-
-          insidePolygon = isPointInPolygon(userLat, userLng, normalizedPolygon);
-          polygonBased = true;
-
-          // 50-meter tolerance check if outside polygon
-          if (!insidePolygon) {
-            const polyDist = getDistanceToPolygon(userLat, userLng, normalizedPolygon);
-            if (polyDist <= 50) {
-              insidePolygon = true;
-            }
-          }
-        } catch (e) {
-          console.error('[GEOFENCE PARSE ERROR]', e);
-        }
-      }
-
-      // Legacy circular distance check (+50m buffer)
-      const distance = calculateDistance(userLat, userLng, officeLat, officeLng);
-      const insideRadius = distance <= (radius + 50);
-
-      // 3. Full GPS Debug Logging
       console.log('====================================================');
-      console.log('[GEOFENCE VALIDATION]');
+      console.log('[MULTI-SITE GEOFENCE VALIDATION]');
       console.log('USER LAT:', userLat);
       console.log('USER LNG:', userLng);
-      console.log('OFFICE LAT:', officeLat);
-      console.log('OFFICE LNG:', officeLng);
-      console.log('SETTINGS RADIUS:', settingsObj.geofence_radius);
-      console.log('ACTIVE VALIDATION RADIUS:', radius);
-      console.log('insidePolygon:', insidePolygon);
-      console.log('insideRadius (with 50m buffer):', insideRadius);
-      console.log('distance:', distance);
-      console.log('allowedRadius:', radius);
-      console.log('Loaded polygon:', loadedPolygon);
+      console.log('IS INSIDE ANY SITE:', isInside);
+      console.log('MATCHED SITE:', matchedSite);
+      console.log('NEAREST SITE:', nearestSite);
+      console.log('TOTAL SITES CHECKED:', geofenceResult.allSites.length);
       console.log('====================================================');
 
-      // 4. Evaluate Geofence Check with Safe Fallback circular validation
-      let isInside = false;
-      if (polygonBased) {
-        isInside = insidePolygon || insideRadius; // Radius validation acts as fallback safety layer
-      } else {
-        isInside = insideRadius;
-      }
-
-      // 4b. Velocity Check (Only if inside geofence)
+      // Velocity Check (Only if inside geofence)
       if (isInside) {
         const prevLatStr = localStorage.getItem(`__LAST_LAT_${employeeId}__`);
         const prevLngStr = localStorage.getItem(`__LAST_LNG_${employeeId}__`);
@@ -1709,23 +1752,15 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         localStorage.setItem(`__LAST_TIME_${employeeId}__`, String(Date.now()));
       }
 
-      // Temp Test Override (default to false, check test injection)
-      const BYPASS_GEOFENCE = typeof window !== 'undefined' && window.__BYPASS_GEOFENCE__ !== undefined ? window.__BYPASS_GEOFENCE__ : false;
-      console.log('[GEOFENCE VALIDATION] Bypass Geofence Status:', BYPASS_GEOFENCE);
-      if (BYPASS_GEOFENCE) {
-        console.log('[GEOFENCE OVERRIDE ACTIVE] Forcing isInside to true.');
-        isInside = true;
-      }
-
       if (!isInside) {
-        const breachDetails = polygonBased
-          ? 'Geofence breach: employee outside mapped office polygon boundary.'
-          : `Geofence breach: employee outside by ${Math.round(distance - radius)}m (Distance: ${Math.round(distance)}m).`;
+        const breachDetails = nearestSite
+          ? `Geofence breach: Employee outside all authorized sites. Closest site "${nearestSite.name}" is ${Math.round(nearestSite.distance)}m away (allowed: ${nearestSite.radius}m).`
+          : 'Geofence breach: Employee outside authorized office & project site boundaries.';
 
         await supabase.from('logs').insert({
           employee_id: employeeId,
           event_type: 'GEOFENCE_VIOLATION',
-          location: location || 'Front Desk Camera',
+          location: nearestSite?.name || 'Outside Office',
           details: breachDetails
         });
 
@@ -1733,7 +1768,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           employee_id: employeeId,
           event_type: 'GEOFENCE_VIOLATION',
           timestamp: new Date().toISOString(),
-          location: location || 'Front Desk Camera',
+          location: nearestSite?.name || 'Outside Office',
           name,
           details: breachDetails
         });
@@ -1746,8 +1781,10 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
           longitude: userLng
         });
 
-        const error = new Error('You are outside office premises.');
-        error.details = { polygonBased, distance, allowedRadius: radius };
+        const error = new Error(`You are outside authorized office & site perimeters (Nearest: "${nearestSite?.name || 'Office'}", ${Math.round(nearestSite?.distance || 0)}m away).`);
+        error.details = { matchedSite, nearestSite, allSites: geofenceResult.allSites };
+        error.reason = 'GEOFENCE_INVALID';
+        error.voiceMessage = `Outside office premises. Closest site is ${nearestSite?.name || 'Office'}.`;
         throw error;
       }
 
@@ -2046,68 +2083,36 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         throw new Error('Biometric Scanner Blocked: Anti-Spoof Check Flagged.');
       }
 
-      // Geofence check — evaluate polygon boundary with circular fallback
+      // Multi-Site Geofence check across all authorized offices & project sites
       const userLat = parseFloat(userCoords?.latitude);
       const userLng = parseFloat(userCoords?.longitude);
 
       let isInside = true;
+      let activeLocationName = location || 'Public Terminal';
+
       if (userCoords && !isNaN(userLat) && !isNaN(userLng)) {
-        let polygonBased = false;
-        let distance = 0;
-        let radius = 100;
-        let officeLat = 28.6139;
-        let officeLng = 77.2090;
-
-        try {
-          const { data: polyData } = await supabase
-            .from('office_geofence')
-            .select('polygon_coordinates')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-          if (polyData && polyData.length > 0 && polyData[0].polygon_coordinates) {
-            let coords = polyData[0].polygon_coordinates;
-            if (typeof coords === 'string') {
-              try { coords = JSON.parse(coords); } catch (e) {}
-            }
-            if (Array.isArray(coords) && coords.length >= 3) {
-              polygonBased = true;
-              isInside = isPointInPolygon(userLat, userLng, coords);
-              distance = getDistanceToPolygon(userLat, userLng, coords);
-            }
-          }
-        } catch (e) {}
-
-        if (!polygonBased) {
-          const { data: settingsData } = await supabase
-            .from('settings')
-            .select('key, value')
-            .in('key', ['geofence_lat', 'geofence_lng', 'geofence_radius']);
-          
-          const settingsObj = {};
-          (settingsData || []).forEach(row => {
-            settingsObj[row.key] = parseFloat(row.value);
-          });
-
-          officeLat = settingsObj.geofence_lat || 28.6139;
-          officeLng = settingsObj.geofence_lng || 77.2090;
-          radius = settingsObj.geofence_radius || 100;
-
-          distance = calculateDistance(userLat, userLng, officeLat, officeLng);
-          isInside = distance <= (radius + 50);
-        }
-
-        const BYPASS_GEOFENCE = typeof window !== 'undefined' && window.__BYPASS_GEOFENCE__ !== undefined ? window.__BYPASS_GEOFENCE__ : false;
-        if (BYPASS_GEOFENCE) isInside = true;
+        const geofenceResult = await evaluateMultiSiteGeofence(userLat, userLng);
+        isInside = geofenceResult.isInside;
+        const matchedSite = geofenceResult.matchedSite;
+        const nearestSite = geofenceResult.nearestSite;
+        if (matchedSite) activeLocationName = matchedSite.name;
 
         if (!isInside) {
+          const breachDetails = nearestSite
+            ? `Public Terminal Geofence breach: Employee outside all sites. Closest site "${nearestSite.name}" is ${Math.round(nearestSite.distance)}m away (allowed: ${nearestSite.radius}m).`
+            : 'Public Terminal Geofence breach: Employee outside authorized office & site boundaries.';
+
           await supabase.from('logs').insert({
             employee_id: employeeId,
             event_type: 'GEOFENCE_VIOLATION',
-            location: location || 'Public Terminal',
-            details: `Public Kiosk Geofence breach: employee outside boundary by ${Math.round(distance - radius)}m.`
+            location: nearestSite?.name || 'Outside Office',
+            details: breachDetails
           });
-          throw new Error('Access Denied: You are outside office premises geofence.');
+
+          const error = new Error(`Access Denied: You are outside authorized office & project site perimeters (Nearest: "${nearestSite?.name || 'Office'}", ${Math.round(nearestSite?.distance || 0)}m away).`);
+          error.reason = 'GEOFENCE_INVALID';
+          error.voiceMessage = `Outside office premises. Closest site is ${nearestSite?.name || 'Office'}.`;
+          throw error;
         }
       }
 

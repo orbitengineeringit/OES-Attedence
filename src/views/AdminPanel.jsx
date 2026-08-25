@@ -273,6 +273,19 @@ export default function AdminPanel() {
   const [confirmTextInput, setConfirmTextInput] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
 
+  // Multi-Site & Enterprise Office Geofence State
+  const [allSites, setAllSites] = useState([]);
+  const [newSiteModalOpen, setNewSiteModalOpen] = useState(false);
+  const [newSiteData, setNewSiteData] = useState({
+    name: '',
+    type: 'Project Site',
+    lat: 28.6139,
+    lng: 77.2090,
+    radius: 150,
+    address: ''
+  });
+  const [savingSite, setSavingSite] = useState(false);
+
   // Robust speech synthesis helper
   const speakText = (text) => {
     if (!window.speechSynthesis) return;
@@ -963,13 +976,74 @@ export default function AdminPanel() {
         if (geoRes.success && geoRes.geofence && isComponentMounted.current) {
           setActivePolygon(geoRes.geofence.polygon_coordinates);
         }
-      } catch (err) {
-        console.error('[GEOFENCE FETCH ERROR]:', err);
-      }
+      } catch (e) {}
+
+      // Fetch all registered enterprise multi-site perimeters
+      await fetchSites();
     } catch (err) {
       console.error('[ADMIN SETTINGS FETCH ERROR]:', err);
     } finally {
       if (isComponentMounted.current) setLoadingSettings(false);
+    }
+  };
+
+  // Fetch all configured sites & project branches
+  const fetchSites = async () => {
+    try {
+      const res = await apiCall('/settings/geofences', 'GET');
+      if (res.success && isComponentMounted.current) {
+        setAllSites(res.geofences || []);
+      }
+    } catch (err) {
+      console.error('[FETCH SITES ERROR]:', err);
+    }
+  };
+
+  const handleSaveNewSite = async (e) => {
+    if (e) e.preventDefault();
+    if (!newSiteData.name.trim()) {
+      showToast('Please enter an office or site name', 'warning');
+      return;
+    }
+    setSavingSite(true);
+    try {
+      const res = await apiCall('/settings/geofences', 'POST', {
+        office_name: newSiteData.name.trim(),
+        type: newSiteData.type,
+        latitude: parseFloat(newSiteData.lat),
+        longitude: parseFloat(newSiteData.lng),
+        radius: parseInt(newSiteData.radius, 10) || 100
+      });
+      if (res.success) {
+        showToast(`Site "${newSiteData.name}" added & activated successfully!`, 'success');
+        setNewSiteModalOpen(false);
+        setNewSiteData({
+          name: '',
+          type: 'Project Site',
+          lat: settings.geofence_lat || 28.6139,
+          lng: settings.geofence_lng || 77.2090,
+          radius: 150,
+          address: ''
+        });
+        fetchSites();
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to add site location', 'error');
+    } finally {
+      setSavingSite(false);
+    }
+  };
+
+  const handleDeleteSite = async (siteId, siteName) => {
+    if (!window.confirm(`Are you sure you want to delete the site location "${siteName}"?`)) return;
+    try {
+      const res = await apiCall(`/settings/geofences/${siteId}`, 'DELETE');
+      if (res.success) {
+        showToast(`Site "${siteName}" removed.`, 'success');
+        fetchSites();
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to delete site', 'error');
     }
   };
 
@@ -2247,7 +2321,7 @@ export default function AdminPanel() {
       )}
 
 
-      {/* Tab 4: Location & Geofence Settings */}
+      {/* Tab 4: Location & Geofence Settings (Enterprise Multi-Site Hub) */}
       {activeTab === 'location' && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
@@ -2256,38 +2330,72 @@ export default function AdminPanel() {
           className="space-y-6"
         >
           {/* ===== GEOFENCE CONFIGURATION SECTION ===== */}
-          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm relative">
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm relative space-y-6">
+            {/* Header with Multi-Site Management & Add Site Button */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div>
                 <h3 className="text-base font-semibold text-slate-900 flex items-center gap-2">
-                  <Crosshair className="w-4 h-4 text-indigo-600" />
-                  Office geofence boundary configuration
+                  <Globe className="w-4 h-4 text-indigo-600" />
+                  Enterprise Multi-Site Geofence Network
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Set office center coordinates and radius boundary to enforce location compliance during attendance scans.
+                  Configure office headquarters, branch offices, client plants, and project sites. Employees can verify attendance from ANY active site.
                 </p>
               </div>
 
-              {/* GPS Detect Button */}
-              <button
-                type="button"
-                onClick={handleDetectLocation}
-                disabled={gpsDetecting}
-                className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-400 text-white font-medium text-xs rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap min-h-[40px]"
-              >
-                {gpsDetecting ? (
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <Navigation className="w-3.5 h-3.5" />
-                )}
-                {gpsDetecting ? 'Acquiring GPS...' : 'Use current location'}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNewSiteModalOpen(true)}
+                  className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap min-h-[40px]"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  + Add Office / Project Site
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDetectLocation}
+                  disabled={gpsDetecting}
+                  className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-400 text-white font-medium text-xs rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap min-h-[40px]"
+                >
+                  {gpsDetecting ? (
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Navigation className="w-3.5 h-3.5" />
+                  )}
+                  {gpsDetecting ? 'Acquiring GPS...' : 'Use current location'}
+                </button>
+              </div>
+            </div>
+
+            {/* Multi-Site Network Overview KPIs */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3.5">
+                <p className="text-[11px] text-slate-500 font-medium">Total Authorized Locations</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{allSites.length + 1} Sites</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">All active & attendance-ready</p>
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3.5">
+                <p className="text-[11px] text-indigo-600 font-medium">Corporate Headquarters</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900 truncate">{officeName || 'Head Office'}</p>
+                <p className="text-[10px] text-indigo-500 mt-0.5">Radius: {settings.geofence_radius}m</p>
+              </div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3.5">
+                <p className="text-[11px] text-emerald-700 font-medium">Field / Project Sites</p>
+                <p className="mt-1 text-lg font-bold text-emerald-800">{allSites.length} Locations</p>
+                <p className="text-[10px] text-emerald-600 mt-0.5">Branches, Plants & Sites</p>
+              </div>
+              <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3.5">
+                <p className="text-[11px] text-slate-500 font-medium">Universal Validation Policy</p>
+                <p className="mt-1 text-xs font-semibold text-emerald-700">✓ Multi-Location Enabled</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">Travelling staff auto-recognized</p>
+              </div>
             </div>
 
             {/* GPS Status Banner */}
             {gpsDetecting && (
-              <div className="mb-4 flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-700">
+              <div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-700">
                 <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin flex-shrink-0" />
                 <div>
                   <div className="text-xs font-semibold">Acquiring GPS signal</div>
@@ -2296,7 +2404,7 @@ export default function AdminPanel() {
               </div>
             )}
             {gpsError && (
-              <div className="mb-4 flex items-center gap-3 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700">
+              <div className="flex items-center gap-3 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700">
                 <WifiOff className="w-4 h-4 text-red-600 flex-shrink-0" />
                 <div>
                   <div className="text-xs font-semibold">GPS signal unavailable</div>
@@ -2305,7 +2413,7 @@ export default function AdminPanel() {
               </div>
             )}
             {!gpsDetecting && !gpsError && gpsAccuracy && (
-              <div className="mb-4 flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800">
+              <div className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800">
                 <Wifi className="w-4 h-4 text-emerald-600 flex-shrink-0" />
                 <div>
                   <div className="text-xs font-semibold">GPS lock acquired</div>
@@ -2314,7 +2422,7 @@ export default function AdminPanel() {
               </div>
             )}
             {locationSaved && (
-              <div className="mb-4 flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800">
+              <div className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
                 <div className="text-xs font-semibold">Office geofence saved successfully. All attendance scans now validate against this boundary.</div>
               </div>
@@ -2326,7 +2434,7 @@ export default function AdminPanel() {
                 <p className="text-xs text-slate-500 mt-3">Loading geofence workspace...</p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-6">
 
                 {/* Location Search Bar */}
                 <div ref={searchContainerRef} className="relative">
@@ -2344,7 +2452,7 @@ export default function AdminPanel() {
                         value={locationSearch}
                         onChange={(e) => handleLocationSearchChange(e.target.value)}
                         onFocus={() => locationSuggestions.length > 0 && setShowSuggestions(true)}
-                        placeholder="Search landmark, address, building or city..."
+                        placeholder="Search landmark, address, building or city to set or find office location..."
                         className="w-full rounded-xl border border-slate-200 bg-white !pl-10 !pr-10 !py-2.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10"
                       />
                       {locationSearch && (
@@ -2393,20 +2501,13 @@ export default function AdminPanel() {
                       </div>
                     </div>
                   )}
-                  {showSuggestions && locationSearch.length > 2 && !searchLoading && locationSuggestions.length === 0 && (
-                    <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-[1000] bg-white border border-slate-200 rounded-xl p-4 text-center shadow-lg">
-                      <MapPin className="w-5 h-5 text-slate-400 mx-auto mb-1.5" />
-                      <p className="text-xs text-slate-600 font-medium">No results found for "{locationSearch}"</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">Try a different spelling or landmark name</p>
-                    </div>
-                  )}
                 </div>
 
-                {/* Office Name & Address Fields */}
+                {/* Primary HQ Details */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 mb-1">
-                      <Building2 className="w-3.5 h-3.5 text-indigo-600" /> Office / building name
+                      <Building2 className="w-3.5 h-3.5 text-indigo-600" /> Primary HQ / Main Office Name
                     </label>
                     <input
                       type="text"
@@ -2417,8 +2518,8 @@ export default function AdminPanel() {
                           setOfficeNameError('');
                         }
                       }}
-                      placeholder="e.g. Headquarters, Orbit Engineering..."
-                      className={`w-full ${officeNameError ? 'border-red-300' : ''}`}
+                      placeholder="e.g. Orbit Engineering Headquarters"
+                      className={`w-full text-xs rounded-xl border border-slate-200 p-2.5 ${officeNameError ? 'border-red-300' : ''}`}
                     />
                     {officeNameError && (
                       <div className="text-xs text-red-600 mt-1 flex items-center gap-1">
@@ -2429,61 +2530,33 @@ export default function AdminPanel() {
                   </div>
                   <div>
                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 mb-1">
-                      <MapPin className="w-3.5 h-3.5 text-indigo-600" /> Full address
+                      <MapPin className="w-3.5 h-3.5 text-indigo-600" /> Primary HQ Address
                     </label>
                     <input
                       type="text"
                       value={officeAddress}
                       onChange={(e) => setOfficeAddress(e.target.value)}
-                      placeholder="Auto-filled on search or map click..."
-                      className="w-full"
+                      placeholder="Address or landmark..."
+                      className="w-full text-xs rounded-xl border border-slate-200 p-2.5"
                     />
                   </div>
                 </div>
 
-                {/* Coordinate Cards */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
-                    <p className="text-[11px] text-slate-500 font-medium">Latitude</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-900 truncate">
-                      {settings.geofence_lat !== 0 ? settings.geofence_lat.toFixed(6) : '—'}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
-                    <p className="text-[11px] text-slate-500 font-medium">Longitude</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-900 truncate">
-                      {settings.geofence_lng !== 0 ? settings.geofence_lng.toFixed(6) : '—'}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
-                    <p className="text-[11px] text-slate-500 font-medium">Radius</p>
-                    <p className="mt-1 text-sm font-semibold text-indigo-700">
-                      {settings.geofence_radius}m
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
-                    <p className="text-[11px] text-slate-500 font-medium">GPS accuracy</p>
-                    <p className="mt-1 text-sm font-semibold text-emerald-700">
-                      {gpsAccuracy ? `±${gpsAccuracy}m` : 'No fix'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Interactive Map */}
+                {/* Interactive Multi-Site Map */}
                 <div className="relative rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
-                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[500] bg-white/90 backdrop-blur-md border border-slate-200 rounded-full px-3.5 py-1 text-xs text-slate-600 flex items-center gap-1.5 shadow-sm pointer-events-none">
-                    <MapPin className="w-3.5 h-3.5 text-indigo-600" /> Click to place marker · Drag marker to fine-tune
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[500] bg-white/90 backdrop-blur-md border border-slate-200 rounded-full px-3.5 py-1 text-xs text-slate-600 flex items-center gap-1.5 shadow-sm pointer-events-none whitespace-nowrap">
+                    <Globe className="w-3.5 h-3.5 text-indigo-600" /> All {allSites.length + 1} Authorized Sites Plotted · Click any site to view
                   </div>
 
                   {settings.geofence_lat !== 0 && settings.geofence_lng !== 0 ? (
                     <MapContainer
-                      key="admin-geofence-map-static"
+                      key="admin-geofence-map-multisite"
                       ref={geofenceMapRef}
                       center={[settings.geofence_lat, settings.geofence_lng]}
-                      zoom={16}
+                      zoom={15}
                       scrollWheelZoom={true}
                       className="w-full z-0"
-                      style={{ height: '380px' }}
+                      style={{ height: '400px' }}
                     >
                       <ChangeMapView center={geofenceMapCenter} zoom={geofenceMapZoom} />
                       <TileLayer
@@ -2492,13 +2565,14 @@ export default function AdminPanel() {
                       />
                       <MapClickHandler onMapClick={handleGeofenceMapClick} />
 
-                      {/* Geofence radius circle */}
+                      {/* Primary HQ Radius Circle */}
                       <Circle
                         center={[settings.geofence_lat, settings.geofence_lng]}
                         radius={settings.geofence_radius}
-                        pathOptions={{ color: '#4F46E5', fillColor: '#4F46E5', fillOpacity: 0.1, weight: 1.5, dashArray: '6 4' }}
+                        pathOptions={{ color: '#4F46E5', fillColor: '#4F46E5', fillOpacity: 0.12, weight: 2, dashArray: '6 4' }}
                       />
 
+                      {/* Primary HQ Marker */}
                       <Marker
                         position={[settings.geofence_lat, settings.geofence_lng]}
                         icon={officeIcon}
@@ -2506,16 +2580,58 @@ export default function AdminPanel() {
                         eventHandlers={{ dragend: handleOfficeMarkerDragEnd }}
                       >
                         <Popup className="text-xs">
-                          <div className="space-y-1 text-xs">
-                            {officeName && <div className="font-semibold text-slate-900 border-b border-slate-100 pb-1 mb-1">{officeName}</div>}
-                            <div className="font-semibold text-indigo-700">Office geofence center</div>
-                            <div>Lat: <span className="font-medium">{settings.geofence_lat.toFixed(6)}</span></div>
-                            <div>Lng: <span className="font-medium">{settings.geofence_lng.toFixed(6)}</span></div>
+                          <div className="space-y-1 text-xs min-w-[170px]">
+                            <div className="font-semibold text-slate-900 border-b border-slate-100 pb-1">{officeName || 'Head Office'}</div>
+                            <div className="text-[11px] font-semibold text-indigo-700">🏢 Corporate HQ</div>
+                            <div>Lat: <span className="font-medium">{settings.geofence_lat.toFixed(5)}</span></div>
+                            <div>Lng: <span className="font-medium">{settings.geofence_lng.toFixed(5)}</span></div>
                             <div>Radius: <span className="font-medium">{settings.geofence_radius}m</span></div>
                           </div>
                         </Popup>
                       </Marker>
-                      
+
+                      {/* Render All Additional Authorized Project Sites & Branch Offices */}
+                      {allSites.map((site) => {
+                        const sLat = site.latitude !== undefined && site.latitude !== null ? parseFloat(site.latitude) : (site.parsedCoordinates?.lat ? parseFloat(site.parsedCoordinates.lat) : null);
+                        const sLng = site.longitude !== undefined && site.longitude !== null ? parseFloat(site.longitude) : (site.parsedCoordinates?.lng ? parseFloat(site.parsedCoordinates.lng) : null);
+                        const sRadius = site.radius || site.parsedCoordinates?.radius || 150;
+                        const sType = site.type || site.parsedCoordinates?.type || 'Project Site';
+                        const sColor = sType === 'Branch Office' ? '#06B6D4' : sType === 'Client Site' ? '#F59E0B' : '#10B981';
+                        const sIcon = sType === 'Branch Office' ? employeeOfflineIcon : sType === 'Client Site' ? employeeOutsideIcon : employeeIcon;
+
+                        if (sLat === null || sLng === null || isNaN(sLat) || isNaN(sLng)) return null;
+
+                        return (
+                          <React.Fragment key={site.id}>
+                            <Circle
+                              center={[sLat, sLng]}
+                              radius={sRadius}
+                              pathOptions={{ color: sColor, fillColor: sColor, fillOpacity: 0.12, weight: 2, dashArray: '4 4' }}
+                            />
+                            <Marker position={[sLat, sLng]} icon={sIcon}>
+                              <Popup className="text-xs">
+                                <div className="space-y-1 text-xs min-w-[170px]">
+                                  <div className="font-semibold text-slate-900 border-b border-slate-100 pb-1">{site.office_name}</div>
+                                  <div className="text-[11px] font-semibold" style={{ color: sColor }}>📍 {sType}</div>
+                                  <div>Lat: <span className="font-medium">{sLat.toFixed(5)}</span></div>
+                                  <div>Lng: <span className="font-medium">{sLng.toFixed(5)}</span></div>
+                                  <div>Radius: <span className="font-medium">{sRadius}m</span></div>
+                                  <div className="pt-2 border-t border-slate-100 flex justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteSite(site.id, site.office_name)}
+                                      className="text-[10px] text-red-600 hover:text-red-700 font-semibold cursor-pointer"
+                                    >
+                                      Delete this site
+                                    </button>
+                                  </div>
+                                </div>
+                              </Popup>
+                            </Marker>
+                          </React.Fragment>
+                        );
+                      })}
+
                       {/* Active Polygon Boundary */}
                       {activePolygon && activePolygon.length >= 3 && !captureMode && (
                         <Polygon 
@@ -2525,7 +2641,7 @@ export default function AdminPanel() {
                       )}
                     </MapContainer>
                   ) : (
-                    <div className="h-[380px] flex flex-col items-center justify-center text-center p-6">
+                    <div className="h-[400px] flex flex-col items-center justify-center text-center p-6">
                       <Crosshair className="w-8 h-8 text-slate-400 mb-2" />
                       <p className="text-xs font-semibold text-slate-700">No office location configured</p>
                       <p className="text-xs text-slate-500 mt-1 max-w-xs">Click "Use current location" or search above to set the office boundary</p>
@@ -2533,17 +2649,118 @@ export default function AdminPanel() {
                   )}
                 </div>
 
-                {/* Radius Slider */}
+                {/* Authorized Sites & Project Locations Directory */}
+                <div className="space-y-3 pt-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                      <Building className="w-4 h-4 text-indigo-600" />
+                      All Authorized Office & Site Perimeters ({allSites.length + 1})
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setNewSiteModalOpen(true)}
+                      className="text-xs text-indigo-600 hover:text-indigo-700 font-semibold cursor-pointer"
+                    >
+                      + Add another site
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {/* Primary HQ Card */}
+                    <div className="rounded-xl border-2 border-indigo-500/30 bg-indigo-50/20 p-4 relative space-y-2">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700 mb-1">
+                            🏢 Main Headquarters
+                          </div>
+                          <h5 className="text-xs font-bold text-slate-900 truncate">{officeName || 'Main Office'}</h5>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGeofenceMapCenter([settings.geofence_lat, settings.geofence_lng]);
+                            setGeofenceMapZoom(17);
+                          }}
+                          className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-[11px] cursor-pointer"
+                          title="Center Map"
+                        >
+                          <Crosshair className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="text-[11px] text-slate-600 space-y-0.5">
+                        <div className="truncate">Lat: {settings.geofence_lat.toFixed(5)}, Lng: {settings.geofence_lng.toFixed(5)}</div>
+                        <div>Boundary Radius: <span className="font-semibold text-indigo-700">{settings.geofence_radius}m</span></div>
+                      </div>
+                    </div>
+
+                    {/* Additional Registered Sites */}
+                    {allSites.map((site) => {
+                      const sLat = site.latitude !== undefined && site.latitude !== null ? parseFloat(site.latitude) : (site.parsedCoordinates?.lat ? parseFloat(site.parsedCoordinates.lat) : null);
+                      const sLng = site.longitude !== undefined && site.longitude !== null ? parseFloat(site.longitude) : (site.parsedCoordinates?.lng ? parseFloat(site.parsedCoordinates.lng) : null);
+                      const sRadius = site.radius || site.parsedCoordinates?.radius || 150;
+                      const sType = site.type || site.parsedCoordinates?.type || 'Project Site';
+
+                      return (
+                        <div key={site.id} className="rounded-xl border border-slate-200 bg-white p-4 space-y-2 relative shadow-2xs">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 mb-1">
+                                📍 {sType}
+                              </div>
+                              <h5 className="text-xs font-bold text-slate-900 truncate">{site.office_name}</h5>
+                            </div>
+                            
+                            <div className="flex items-center gap-1 shrink-0">
+                              {sLat && sLng && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGeofenceMapCenter([sLat, sLng]);
+                                    setGeofenceMapZoom(17);
+                                  }}
+                                  className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 cursor-pointer"
+                                  title="Center Map"
+                                >
+                                  <Crosshair className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSite(site.id, site.office_name)}
+                                className="p-1.5 rounded-lg border border-red-200 hover:bg-red-50 text-red-600 cursor-pointer"
+                                title="Delete Site"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="text-[11px] text-slate-600 space-y-0.5">
+                            {sLat && sLng ? (
+                              <div className="truncate">Lat: {sLat.toFixed(5)}, Lng: {sLng.toFixed(5)}</div>
+                            ) : (
+                              <div className="text-slate-400 italic">Custom Polygon Boundary</div>
+                            )}
+                            <div>Boundary Radius: <span className="font-semibold text-emerald-700">{sRadius}m</span></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Primary HQ Radius Slider & Save Settings */}
                 <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-slate-700">Geofence boundary radius</span>
+                    <span className="text-xs font-medium text-slate-700">Primary HQ Geofence Radius</span>
                     <span className="ui-badge badge-accent">{settings.geofence_radius}m</span>
                   </div>
 
                   <input
                     type="range"
                     min="25"
-                    max="1000"
+                    max="2000"
                     step="25"
                     value={settings.geofence_radius}
                     onChange={(e) => setSettings(prev => ({ ...prev, geofence_radius: parseInt(e.target.value) }))}
@@ -2552,7 +2769,7 @@ export default function AdminPanel() {
 
                   {/* Preset Buttons */}
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {[50, 100, 200, 300, 500].map(r => (
+                    {[50, 100, 200, 300, 500, 1000].map(r => (
                       <button
                         key={r}
                         type="button"
@@ -2569,59 +2786,152 @@ export default function AdminPanel() {
                   </div>
                 </div>
 
-                {/* City Presets & Save Actions */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                  <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2">
-                    <span className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
-                      <Globe className="w-3.5 h-3.5 text-slate-500" /> City presets
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {[
-                        { label: 'Noida', lat: 28.6273, lng: 77.3725 },
-                        { label: 'Delhi HQ', lat: 28.6139, lng: 77.2090 },
-                        { label: 'Mumbai', lat: 19.0760, lng: 72.8777 },
-                        { label: 'Bangalore', lat: 12.9716, lng: 77.5946 },
-                        { label: 'Hyderabad', lat: 17.3850, lng: 78.4867 },
-                        { label: 'Chennai', lat: 13.0827, lng: 80.2707 },
-                      ].map(city => (
-                        <button
-                          key={city.label}
-                          type="button"
-                          onClick={() => {
-                            setSettings(prev => ({ ...prev, geofence_lat: city.lat, geofence_lng: city.lng }));
-                            setGeofenceMapCenter([city.lat, city.lng]);
-                            setGeofenceMapZoom(16);
-                          }}
-                          className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium py-1 px-2.5 rounded-lg transition-colors cursor-pointer"
-                        >
-                          {city.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2 justify-end">
-                    <button
-                      type="button"
-                      onClick={() => saveSettings(settings)}
-                      className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs py-2.5 px-4 rounded-xl shadow-xs transition-colors cursor-pointer min-h-[40px]"
-                    >
-                      <CheckCircle2 className="w-4 h-4" />
-                      Save & activate geofence
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleResetGeofence}
-                      className="w-full flex items-center justify-center gap-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-medium py-2 px-4 rounded-xl transition-colors cursor-pointer min-h-[36px]"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" /> Reset to defaults
-                    </button>
-                  </div>
+                {/* Save HQ Settings & Reset */}
+                <div className="flex flex-col sm:flex-row gap-3 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={handleResetGeofence}
+                    className="flex items-center justify-center gap-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-medium py-2.5 px-4 rounded-xl transition-colors cursor-pointer min-h-[40px]"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Reset to defaults
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => saveSettings(settings)}
+                    className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs py-2.5 px-6 rounded-xl shadow-xs transition-colors cursor-pointer min-h-[40px]"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Save & Activate HQ Boundary
+                  </button>
                 </div>
 
               </div>
             )}
           </div>
+
+          {/* ===== ADD NEW SITE LOCATION MODAL ===== */}
+          <AnimatePresence>
+            {newSiteModalOpen && (
+              <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 space-y-4"
+                >
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-emerald-600" />
+                      Add New Authorized Office or Project Site
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setNewSiteModalOpen(false)}
+                      className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleSaveNewSite} className="space-y-3.5">
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 block mb-1">
+                        Site / Office Name *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newSiteData.name}
+                        onChange={(e) => setNewSiteData(prev => ({ ...prev, name: e.target.value }))}
+                        placeholder="e.g. Highway Project Site 4, Surat Branch, Client Factory"
+                        className="w-full text-xs rounded-xl border border-slate-200 p-2.5 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 block mb-1">
+                        Location Type / Category
+                      </label>
+                      <select
+                        value={newSiteData.type}
+                        onChange={(e) => setNewSiteData(prev => ({ ...prev, type: e.target.value }))}
+                        className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="Project Site">Project Site / Field Location</option>
+                        <option value="Branch Office">Branch Office</option>
+                        <option value="Client Site">Client Plant / Site</option>
+                        <option value="Warehouse">Warehouse / Depot</option>
+                        <option value="Head Office">Regional Head Office</option>
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-slate-700 block mb-1">
+                          Latitude *
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          required
+                          value={newSiteData.lat}
+                          onChange={(e) => setNewSiteData(prev => ({ ...prev, lat: e.target.value }))}
+                          className="w-full text-xs rounded-xl border border-slate-200 p-2.5"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-slate-700 block mb-1">
+                          Longitude *
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          required
+                          value={newSiteData.lng}
+                          onChange={(e) => setNewSiteData(prev => ({ ...prev, lng: e.target.value }))}
+                          className="w-full text-xs rounded-xl border border-slate-200 p-2.5"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-xs font-medium text-slate-700">
+                          Geofence Perimeter Radius: <span className="text-emerald-700 font-bold">{newSiteData.radius}m</span>
+                        </label>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="2000"
+                        step="25"
+                        value={newSiteData.radius}
+                        onChange={(e) => setNewSiteData(prev => ({ ...prev, radius: parseInt(e.target.value) }))}
+                        className="w-full h-2 rounded-full cursor-pointer accent-emerald-600"
+                      />
+                    </div>
+
+                    <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => setNewSiteModalOpen(false)}
+                        className="px-4 py-2 text-xs font-medium rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingSite}
+                        className="px-5 py-2 text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer transition-colors disabled:opacity-50"
+                      >
+                        {savingSite ? 'Saving Site...' : 'Save & Activate Site'}
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
         </motion.div>
       )}
 
