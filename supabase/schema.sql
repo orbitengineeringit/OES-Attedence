@@ -179,6 +179,13 @@ CREATE POLICY "anon_update_employee_status" ON employees
   USING (true)
   WITH CHECK (true);
 
+-- Anon (self-registration fallback): allows new employee insertion when
+-- the tempClient signUp session is unavailable (e.g., email already in Auth).
+-- INSERT only — SELECT/UPDATE/DELETE remain restricted.
+DROP POLICY IF EXISTS "anon_insert_employee_registration" ON employees;
+CREATE POLICY "anon_insert_employee_registration" ON employees
+  FOR INSERT TO anon WITH CHECK (true);
+
 -- ---- ATTENDANCE ----
 -- Authenticated users: full access
 CREATE POLICY "auth_full_attendance" ON attendance

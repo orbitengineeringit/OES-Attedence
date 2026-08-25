@@ -492,7 +492,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
       });
 
-      const { error: authError } = await tempClient.auth.signUp({
+      const { data: signUpData, error: authError } = await tempClient.auth.signUp({
         email,
         password,
         options: { data: { name, role, department } }
@@ -502,8 +502,13 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         console.warn(`Auth Provider registration failed: ${authError.message}`);
       }
 
-      // Add to employees table
-      const { error: dbError } = await supabase.from('employees').insert({
+      // Use the tempClient's authenticated session for the insert so it satisfies
+      // the RLS policy "auth_full_employees" (role = authenticated).
+      // The global `supabase` client has no active session here (user not yet logged in)
+      // so using it would trigger: "new row violates row-level security policy".
+      const insertClient = (signUpData?.session) ? tempClient : supabase;
+
+      const { error: dbError } = await insertClient.from('employees').insert({
         id,
         name,
         email,
@@ -517,6 +522,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       if (dbError) throw new Error(`Database record insertion failed: ${dbError.message}`);
       return { success: true, message: 'Employee profile created successfully.' };
     }
+
 
     // 3. GET /employees/:id (Fetch single employee details)
     const empMatch = matchRoute(endpoint, '/employees/:id');
