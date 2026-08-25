@@ -1925,6 +1925,19 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
         const checkInDate = parseTime(attRecord.check_in, attRecord.date);
         const checkOutDate = new Date();
         const diffMs = Math.max(0, checkOutDate.getTime() - checkInDate.getTime());
+
+        if (diffMs < 60000) {
+          return {
+            success: true,
+            message: `Welcome, ${name}. You recently checked in.`,
+            employee: { id: employeeId, name, department },
+            eventType: 'CHECK_IN',
+            lateDuration: 'On Time',
+            isLate: false,
+            voiceMessage: `Welcome ${name}. You recently checked in.`
+          };
+        }
+
         workingHours = Math.round((diffMs / (1000 * 60 * 60)) * 100) / 100;
         const overtime = workingHours > 8 ? Math.round((workingHours - 8) * 100) / 100 : 0;
 
@@ -2219,6 +2232,19 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
 
         const checkInDate = parseTime(attRecord.check_in, attRecord.date);
         const diffMs = Math.max(0, now.getTime() - checkInDate.getTime());
+
+        if (diffMs < 60000) {
+          return {
+            success: true,
+            message: `Welcome ${name}. You recently checked in.`,
+            employee: { id: employeeId, name, department, avatar },
+            eventType: 'CHECK_IN',
+            date: displayDateStr,
+            time: displayTimeStr,
+            alreadyCompleted: true
+          };
+        }
+
         const workingHours = Math.round((diffMs / (1000 * 60 * 60)) * 100) / 100;
         const overtime = workingHours > 8 ? Math.round((workingHours - 8) * 100) / 100 : 0;
 

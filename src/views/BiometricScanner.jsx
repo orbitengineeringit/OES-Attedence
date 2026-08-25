@@ -469,7 +469,7 @@ export default function BiometricScanner() {
           lastScanDetailsRef.current = null;
           setLastScanDetails(null);
           setScanResult(null);
-          if (mountedRef.current && !scanLoopActive.current) {
+          if (isComponentMounted.current && !scanLoopActive.current) {
             startCamera();
           }
           return 0;

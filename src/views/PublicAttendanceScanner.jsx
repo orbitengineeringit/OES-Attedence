@@ -442,6 +442,7 @@ export default function PublicAttendanceScanner() {
         if (isComponentMounted.current) {
           setScanResult(prev => (prev?.success ? null : prev));
           fetchChallenge();
+          scanInProgressRef.current = false;
         }
       }, 5000);
     } catch (err) {
@@ -479,12 +480,12 @@ export default function PublicAttendanceScanner() {
         if (isComponentMounted.current) {
           setScanResult(prev => (!prev?.success ? null : prev));
           fetchChallenge();
+          scanInProgressRef.current = false;
         }
       }, 6000);
 
     } finally {
       setIsProcessing(false);
-      scanInProgressRef.current = false;
     }
   };
 
