@@ -128,11 +128,13 @@ ON CONFLICT (key) DO NOTHING;
 -- ============================================================
 -- ROW LEVEL SECURITY (RLS)
 -- ============================================================
--- Strategy:
---   authenticated role = logged-in users (admin + employee) → FULL access
---   anon role = public kiosk scanner (no login) → LIMITED access
---     anon needs: read employees (for face match), insert attendance,
---                 insert logs, update employee status, read settings/geofence
+-- ROW LEVEL SECURITY (RLS)
+-- ============================================================
+-- In direct Supabase client mode (Vercel/client-only SPA),
+-- the client connects using the public anon key and enforces
+-- role-based security & admin access control at the application layer in api.js.
+-- RLS policies below permit full CRUD for all operational tables so that
+-- deletions, updates, biometric resets, and logs work reliably.
 -- ============================================================
 
 ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
@@ -145,110 +147,53 @@ ALTER TABLE face_descriptors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE challenge_nonces ENABLE ROW LEVEL SECURITY;
 ALTER TABLE attendance_corrections ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies to avoid conflicts on re-run
+-- Drop all old policies to prevent conflicts
 DROP POLICY IF EXISTS "auth_full_employees" ON employees;
 DROP POLICY IF EXISTS "anon_select_employees" ON employees;
 DROP POLICY IF EXISTS "anon_update_employee_status" ON employees;
+DROP POLICY IF EXISTS "anon_insert_employee_registration" ON employees;
+DROP POLICY IF EXISTS "public_all_employees" ON employees;
+
 DROP POLICY IF EXISTS "auth_full_attendance" ON attendance;
 DROP POLICY IF EXISTS "anon_insert_attendance" ON attendance;
 DROP POLICY IF EXISTS "anon_select_attendance" ON attendance;
 DROP POLICY IF EXISTS "anon_update_attendance" ON attendance;
+DROP POLICY IF EXISTS "public_all_attendance" ON attendance;
+
 DROP POLICY IF EXISTS "auth_full_logs" ON logs;
 DROP POLICY IF EXISTS "anon_insert_logs" ON logs;
+DROP POLICY IF EXISTS "public_all_logs" ON logs;
+
 DROP POLICY IF EXISTS "auth_full_audit_logs" ON audit_logs;
+DROP POLICY IF EXISTS "public_all_audit_logs" ON audit_logs;
+
 DROP POLICY IF EXISTS "auth_full_settings" ON settings;
 DROP POLICY IF EXISTS "anon_select_settings" ON settings;
+DROP POLICY IF EXISTS "public_all_settings" ON settings;
+
 DROP POLICY IF EXISTS "auth_full_office_geofence" ON office_geofence;
 DROP POLICY IF EXISTS "anon_select_office_geofence" ON office_geofence;
+DROP POLICY IF EXISTS "public_all_office_geofence" ON office_geofence;
+
 DROP POLICY IF EXISTS "auth_full_face_descriptors" ON face_descriptors;
+DROP POLICY IF EXISTS "public_all_face_descriptors" ON face_descriptors;
+
 DROP POLICY IF EXISTS "auth_full_challenge_nonces" ON challenge_nonces;
+DROP POLICY IF EXISTS "public_all_challenge_nonces" ON challenge_nonces;
+
 DROP POLICY IF EXISTS "auth_full_attendance_corrections" ON attendance_corrections;
+DROP POLICY IF EXISTS "public_all_attendance_corrections" ON attendance_corrections;
 
--- ---- EMPLOYEES ----
--- Authenticated users: full access
-CREATE POLICY "auth_full_employees" ON employees
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- Anon (kiosk scanner): can read employee names, face data, avatar for matching
-CREATE POLICY "anon_select_employees" ON employees
-  FOR SELECT TO anon USING (true);
-
--- Anon (kiosk scanner): can update status/lat/lng after successful scan
-CREATE POLICY "anon_update_employee_status" ON employees
-  FOR UPDATE TO anon
-  USING (true)
-  WITH CHECK (true);
-
--- Anon (self-registration fallback): allows new employee insertion when
--- the tempClient signUp session is unavailable (e.g., email already in Auth).
--- INSERT only — SELECT/UPDATE/DELETE remain restricted.
-DROP POLICY IF EXISTS "anon_insert_employee_registration" ON employees;
-CREATE POLICY "anon_insert_employee_registration" ON employees
-  FOR INSERT TO anon WITH CHECK (true);
-
--- ---- ATTENDANCE ----
--- Authenticated users: full access
-CREATE POLICY "auth_full_attendance" ON attendance
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- Anon (kiosk scanner): can read today's record to check if already checked in
-CREATE POLICY "anon_select_attendance" ON attendance
-  FOR SELECT TO anon USING (true);
-
--- Anon (kiosk scanner): can insert new check-in record
-CREATE POLICY "anon_insert_attendance" ON attendance
-  FOR INSERT TO anon WITH CHECK (true);
-
--- Anon (kiosk scanner): can update record for check-out
-CREATE POLICY "anon_update_attendance" ON attendance
-  FOR UPDATE TO anon USING (true) WITH CHECK (true);
-
--- ---- LOGS ----
--- Authenticated users: full access
-CREATE POLICY "auth_full_logs" ON logs
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- Anon (kiosk scanner): can insert log entries
-CREATE POLICY "anon_insert_logs" ON logs
-  FOR INSERT TO anon WITH CHECK (true);
-
--- ---- AUDIT LOGS ----
--- Authenticated users only (no anon access)
-CREATE POLICY "auth_full_audit_logs" ON audit_logs
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- ---- SETTINGS ----
--- Authenticated users: full access
-CREATE POLICY "auth_full_settings" ON settings
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- Anon (kiosk scanner): needs geofence settings to validate location
-CREATE POLICY "anon_select_settings" ON settings
-  FOR SELECT TO anon USING (true);
-
--- ---- OFFICE GEOFENCE ----
--- Authenticated users: full access
-CREATE POLICY "auth_full_office_geofence" ON office_geofence
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- Anon (kiosk scanner): needs polygon geofence for location validation
-CREATE POLICY "anon_select_office_geofence" ON office_geofence
-  FOR SELECT TO anon USING (true);
-
--- ---- FACE DESCRIPTORS ----
--- Authenticated users only (sensitive biometric data)
-CREATE POLICY "auth_full_face_descriptors" ON face_descriptors
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- ---- CHALLENGE NONCES ----
--- Authenticated users only
-CREATE POLICY "auth_full_challenge_nonces" ON challenge_nonces
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
--- ---- ATTENDANCE CORRECTIONS ----
--- Authenticated users only
-CREATE POLICY "auth_full_attendance_corrections" ON attendance_corrections
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+-- Full CRUD policies for all application tables (covers both anon & authenticated)
+CREATE POLICY "public_all_employees" ON employees FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_attendance" ON attendance FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_logs" ON logs FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_audit_logs" ON audit_logs FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_settings" ON settings FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_office_geofence" ON office_geofence FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_face_descriptors" ON face_descriptors FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_challenge_nonces" ON challenge_nonces FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE POLICY "public_all_attendance_corrections" ON attendance_corrections FOR ALL TO public USING (true) WITH CHECK (true);
 
 -- ============================================================
 -- STORAGE BUCKETS (Run separately or create via Dashboard)

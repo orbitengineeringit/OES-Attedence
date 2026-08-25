@@ -647,6 +647,7 @@ export const apiCall = async (endpoint, method = 'GET', body = null, token = nul
       delete cache.employees[empId]; // Invalidate
 
       try {
+        await supabase.from('attendance_corrections').delete().eq('employee_id', empId);
         await supabase.from('attendance').delete().eq('employee_id', empId);
         await supabase.from('face_descriptors').delete().eq('employee_id', empId);
         await supabase.from('logs').delete().eq('employee_id', empId);
