@@ -142,9 +142,7 @@ const generatePassword = () => 'emp@' + Math.floor(1000 + Math.random() * 9000);
 
 export default function AdminPanel() {
   const { theme } = useTheme();
-  const mapTileUrl = theme === 'dark' 
-    ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-    : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
+  const mapTileUrl = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('quantum_admin_active_tab') || 'directory'); // 'directory' | 'register' | 'face-enroll' | 'location' | 'danger'
   const [employees, setEmployees] = useState([]);
@@ -1774,6 +1772,8 @@ export default function AdminPanel() {
                           <span className={`ui-badge ${
                             emp.status === 'Inside Office' 
                               ? 'badge-success' 
+                              : emp.status === 'Online'
+                              ? 'badge-success'
                               : emp.status === 'Outside Office'
                               ? 'badge-info'
                               : 'badge-neutral'
@@ -1781,6 +1781,8 @@ export default function AdminPanel() {
                             <span className={`h-1.5 w-1.5 rounded-full ${
                               emp.status === 'Inside Office' 
                                 ? 'bg-emerald-500 animate-pulse' 
+                                : emp.status === 'Online'
+                                ? 'bg-emerald-500'
                                 : emp.status === 'Outside Office'
                                 ? 'bg-blue-500'
                                 : 'bg-slate-400'
