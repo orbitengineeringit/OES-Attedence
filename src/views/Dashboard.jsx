@@ -479,20 +479,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Top Summary Badges */}
-        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4 border-t border-slate-100 pt-4">
-          {[
-            { label: 'Active now', value: user?.role === 'admin' ? metrics.activeEmployees : user?.role || 'Employee' },
-            { label: 'Audit events', value: metrics.totalLogsCount },
-            { label: 'Alerts', value: metrics.securityAlerts },
-            { label: 'Workspace', value: user?.department || 'Operations' },
-          ].map((item) => (
-            <div key={item.label} className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
-              <p className="text-xs text-slate-500 font-medium">{item.label}</p>
-              <p className="mt-1 text-lg font-semibold text-slate-900 truncate">{item.value}</p>
-            </div>
-          ))}
-        </div>
       </div>
 
       {/* 4 Stat Cards */}
